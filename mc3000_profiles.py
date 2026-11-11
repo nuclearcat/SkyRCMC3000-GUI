@@ -243,6 +243,8 @@ BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
         "cut_time_min": 150,
     },
     # Refresh/Break-in profiles
+    # Refresh is a fixed charge > discharge > charge sequence; the cycle
+    # settings below are not used by the charger in this mode.
     "NiMH Refresh (C>D>C)": {
         "battery_type": 3,
         "operation_mode": 1,  # Refresh
@@ -274,9 +276,10 @@ BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
         "cut_time_min": 600,
     },
     # Capacity test
+    # Must be Cycle mode: Refresh always runs C>D>C and ignores cycle_mode.
     "Capacity Test (D>C)": {
         "battery_type": 3,
-        "operation_mode": 1,  # Refresh
+        "operation_mode": 4,  # Cycle
         "capacity_mah": 2000,
         "charge_current_ma": 1000,
         "discharge_current_ma": 500,

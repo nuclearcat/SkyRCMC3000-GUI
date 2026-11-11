@@ -58,3 +58,9 @@ def test_nimh_idle_is_not_blocked():
     plan = plan_start([d(4, 1222)], [st])
     assert plan.slots[0].state == STARTS
     assert "stops after 1 min" in plan.slots[0].text
+
+
+def test_capacity_test_preset_uses_cycle_mode():
+    from mc3000_profiles import BUILTIN_PRESETS
+    p = BUILTIN_PRESETS["Capacity Test (D>C)"]
+    assert p["operation_mode"] == 4 and p["cycle_mode"] == 2 and p["num_cycles"] == 1
