@@ -18,6 +18,12 @@ Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 batter
 > On macOS with Homebrew's hidapi, start it with
 > `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib mc3000-gui`.
 
+## Changes in 1.9.0
+
+- **Dark mode**: "Theme" selector in the main window - Auto (follows the
+  operating system, switches live), Light, Dark. Graphs switch too. The
+  choice is remembered.
+
 ## Changes in 1.8.13
 
 - Documentation: fork note with install command, updated known limitations,

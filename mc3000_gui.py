@@ -10,7 +10,7 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("skyrc-mc3000-gui")
 except Exception:  # running from a source checkout
-    __version__ = "1.8.13"
+    __version__ = "1.9.0"
 
 import sys
 import time
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QGridLayout,
     QLabel,
+    QComboBox,
     QPushButton,
     QFrame,
     QGroupBox,
@@ -47,6 +48,7 @@ from PySide6.QtGui import QFont, QPalette, QColor
 from mc3000_usb import MC3000USB, MC3000USBError, MC3000PermissionError
 from mc3000_protocol import SlotData, STATUS_CODES
 from mc3000_start import plan_start, ACTIVE, EMPTY_SLOT_MV
+from mc3000_theme import ThemeManager, THEME_MODES, THEME_LABELS
 
 # Try to import BLE module (optional dependency)
 try:
@@ -660,7 +662,11 @@ class MainWindow(QMainWindow):
         self.usb_poll_worker: Optional[USBPollWorker] = None
         self._usb_slot_cache: List[Optional[SlotData]] = [None] * 4
 
+        self.theme = ThemeManager(QApplication.instance())
         self._setup_ui()
+        self.theme.apply()
+        if self.graph_widget:
+            self.theme.add_listener(self.graph_widget.apply_theme)
         # Show connection dialog on startup
         self._show_connection_dialog()
 
@@ -706,6 +712,17 @@ class MainWindow(QMainWindow):
 
         header_layout.addStretch()
 
+        # Theme selector (Auto follows the operating system)
+        header_layout.addWidget(QLabel("Theme:"))
+        self.theme_combo = QComboBox()
+        for mode in THEME_MODES:
+            self.theme_combo.addItem(THEME_LABELS[mode], mode)
+        self.theme_combo.setCurrentIndex(THEME_MODES.index(self.theme.mode))
+        self.theme_combo.currentIndexChanged.connect(
+            lambda _i: self.theme.set_mode(self.theme_combo.currentData()))
+        header_layout.addWidget(self.theme_combo)
+        header_layout.addSpacing(20)
+
         # Show/hide graphs checkbox
         if GRAPHS_AVAILABLE:
             self.show_graphs_cb = QCheckBox("Show Graphs")
@@ -720,7 +737,9 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.connection_indicator)
 
         self.transport_label = QLabel("")
-        self.transport_label.setStyleSheet("font-weight: bold;")
+        bold = self.transport_label.font()
+        bold.setBold(True)
+        self.transport_label.setFont(bold)
         header_layout.addWidget(self.transport_label)
 
         self.connection_status = QLabel("Disconnected")

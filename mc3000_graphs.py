@@ -367,6 +367,22 @@ class GraphTabWidget(QTabWidget):
         self.export_btn.clicked.connect(self.export_csv_dialog)
         self.setCornerWidget(self.export_btn, Qt.TopRightCorner)
 
+    def apply_theme(self, dark: bool) -> None:
+        """Switch all plots between light and dark colours."""
+        bg, fg = ((30, 30, 30), (220, 220, 220)) if dark else ('w', 'k')
+        widgets = [self.multi_graph.plot_widget] + [g.plot_widget for g in self.slot_graphs]
+        for pw in widgets:
+            pw.setBackground(bg)
+            for name in ('left', 'bottom'):
+                axis = pw.getAxis(name)
+                axis.setPen(fg)
+                axis.setTextPen(fg)
+            legend = pw.getPlotItem().legend
+            if legend is not None:
+                legend.setLabelTextColor(fg)
+                for _sample, label in legend.items:  # existing entries
+                    label.setText(label.text, color=fg)
+
     def _refresh_visible(self, slot: Optional[int] = None) -> None:
         current = self.currentWidget()
         if current is self.multi_graph:
