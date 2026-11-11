@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skyrc-mc3000-gui"
-version = "1.8.3"
+version = "1.8.4"
 description = "Cross-platform GUI for SKYRC MC3000 battery charger"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -61,7 +61,7 @@ mc3000-backup = "mc3000_backup:main"
 mc3000 = "mc3000_gui:run_gui"
 
 [tool.setuptools]
-py-modules = ["mc3000_protocol", "mc3000_usb", "mc3000_ble", "mc3000_gui", "mc3000_config", "mc3000_profiles", "mc3000_graphs", "mc3000_backup", "main"]
+py-modules = ["mc3000_protocol", "mc3000_usb", "mc3000_ble", "mc3000_gui", "mc3000_config", "mc3000_profiles", "mc3000_graphs", "mc3000_backup", "mc3000_start", "main"]
 include-package-data = true
 
 [tool.setuptools.packages.find]
