@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QComboBox, QSpinBox, QDoubleSpinBox,
     QPushButton, QGroupBox, QTabWidget, QWidget,
-    QMessageBox, QFormLayout, QCheckBox, QInputDialog,
+    QMessageBox, QFormLayout, QCheckBox, QInputDialog, QApplication,
 )
 from PySide6.QtCore import Qt, Signal
 
@@ -38,6 +38,28 @@ class BatteryType(IntEnum):
     NiZn = 5
     Eneloop = 6
     RAM = 7
+
+
+# Manual restart-voltage ranges per chemistry (MC3000 user manual).
+# A value outside the range means "restart OFF" (e.g. LiIon encodes OFF as 2300 mV).
+RESTART_VOLTAGE_RANGES = {
+    0: (3980, 4180),  # LiIon
+    1: (3380, 3580),  # LiFe
+    2: (4080, 4330),  # LiHV
+    3: (1300, 1450),  # NiMH
+    4: (1300, 1450),  # NiCd
+    5: (1500, 1880),  # NiZn
+    6: (1300, 1450),  # Eneloop
+    7: (1400, 1500),  # RAM
+}
+
+
+def restart_voltage_is_off(battery_type: int, mv: int) -> bool:
+    """True if the raw restart voltage is outside the manual range (= OFF)."""
+    rng = RESTART_VOLTAGE_RANGES.get(battery_type)
+    if rng is None:
+        return False
+    return not (rng[0] <= mv <= rng[1])
 
 
 class CycleMode(IntEnum):
@@ -203,6 +225,7 @@ class SlotConfigWidget(QWidget):
         self.config = SlotConfig(slot_number=slot_number)
         self._setup_ui()
         self._connect_signals()
+        self._update_field_relevance()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -297,8 +320,17 @@ class SlotConfigWidget(QWidget):
         self.restart_voltage_spin.setSingleStep(10)
         self.restart_voltage_spin.setValue(1000)
         self.restart_voltage_spin.setSuffix(" mV")
-        self.restart_voltage_spin.setToolTip("Voltage threshold to resume charging after rest")
-        voltage_layout.addRow("Restart:", self.restart_voltage_spin)
+        self.restart_voltage_spin.setToolTip(
+            "Voltage threshold to resume charging after the program finished.\n"
+            "Values outside the range given in the manual mean OFF "
+            "(the charger encodes OFF e.g. as 2300 mV for LiIon).")
+        self.restart_state_label = QLabel("")
+        self.restart_state_label.setStyleSheet("color: gray;")
+        restart_row = QHBoxLayout()
+        self._restart_row = restart_row
+        restart_row.addWidget(self.restart_voltage_spin, 1)
+        restart_row.addWidget(self.restart_state_label)
+        voltage_layout.addRow("Restart:", restart_row)
 
         row2.addWidget(voltage_group)
 
@@ -392,10 +424,15 @@ class SlotConfigWidget(QWidget):
         # Initialize voltage limits and peak sense visibility based on default battery type
         self._update_voltage_limits()
 
+        hint = QLabel("Greyed-out settings are not used by the selected chemistry/mode.")
+        hint.setStyleSheet("color: gray;")
+        layout.addWidget(hint)
+
         layout.addStretch()
 
     def _connect_signals(self):
         self.battery_type_combo.currentIndexChanged.connect(self._on_battery_type_changed)
+        self.mode_combo.currentIndexChanged.connect(self._update_field_relevance)
         self.battery_type_combo.currentIndexChanged.connect(self.configChanged)
         self.mode_combo.currentIndexChanged.connect(self.configChanged)
         self.capacity_spin.valueChanged.connect(self.configChanged)
@@ -413,6 +450,7 @@ class SlotConfigWidget(QWidget):
         self.trickle_current_spin.valueChanged.connect(self.configChanged)
         self.trickle_time_combo.currentIndexChanged.connect(self.configChanged)
         self.restart_voltage_spin.valueChanged.connect(self.configChanged)
+        self.restart_voltage_spin.valueChanged.connect(self._update_restart_label)
         self.cut_temp_spin.valueChanged.connect(self.configChanged)
         self.cut_time_spin.valueChanged.connect(self.configChanged)
 
@@ -439,6 +477,7 @@ class SlotConfigWidget(QWidget):
         self.cut_voltage_spin.setRange(min_v - 500, max_v)
         # Update restart voltage range based on battery type
         self.restart_voltage_spin.setRange(min_v - 200, max_v)
+        self._update_restart_label()
         # Peak sense (-dV) is only for Ni batteries (NiMH, NiCd, Eneloop)
         is_ni_battery = battery_type in (3, 4, 6)  # NiMH, NiCd, Eneloop
         self.peak_sense_spin.setEnabled(is_ni_battery)
@@ -446,6 +485,80 @@ class SlotConfigWidget(QWidget):
             self.peak_sense_spin.setToolTip("-dV detection (only for NiMH/NiCd/Eneloop)")
         else:
             self.peak_sense_spin.setToolTip("-dV detection for NiMH/NiCd batteries")
+        self._update_field_relevance()
+
+    # Which settings the charger uses depends on chemistry and mode. Fields
+    # that do not apply are greyed out (their values are still sent).
+    def _update_field_relevance(self, *_):
+        if not hasattr(self, "_restart_row"):
+            return  # UI not built yet
+        battery_type = self.battery_type_combo.currentData()
+        if battery_type is None:
+            battery_type = 0
+        mode = self.mode_combo.currentText()
+        is_ni = battery_type in (3, 4, 6)       # NiMH, NiCd, Eneloop
+
+        charges = mode in ("Charge", "Refresh", "Storage", "Break-in", "Cycle")
+        discharges = mode in ("Discharge", "Refresh", "Storage", "Break-in", "Cycle")
+        cycle = mode == "Cycle"
+        rests = mode in ("Refresh", "Break-in", "Cycle")
+
+        relevance = [
+            (self.charge_current_spin, charges),
+            (self.discharge_current_spin, discharges),
+            # Ni cells end by -dV, not by a CC/CV end current
+            (self.end_current_spin, charges and not is_ni),
+            (self.end_voltage_spin, charges),
+            (self.cut_voltage_spin, discharges),
+            (self._restart_row, charges and mode != "Storage"),
+            (self.cycle_count_spin, cycle),
+            (self.cycle_mode_combo, cycle),
+            (self.charge_rest_time_spin, rests),
+            (self.discharge_rest_time_spin, rests),
+            (self.discharge_end_current_spin, discharges),
+            (self.peak_sense_spin, charges and is_ni),
+            (self.trickle_current_spin, charges and is_ni),
+            (self.trickle_time_combo, charges and is_ni),
+        ]
+        for item, enabled in relevance:
+            self._set_row_enabled(item, enabled)
+
+    def _set_row_enabled(self, item, enabled: bool):
+        """Enable/disable a form row: field and its label."""
+        if isinstance(item, QHBoxLayout):
+            for i in range(item.count()):
+                w = item.itemAt(i).widget()
+                if w is not None:
+                    w.setEnabled(enabled)
+        else:
+            item.setEnabled(enabled)
+        for form in self.findChildren(QFormLayout):
+            label = form.labelForField(item)
+            if label is not None:
+                label.setEnabled(enabled)
+                break
+
+    def _update_restart_label(self, *_):
+        battery_type = self.battery_type_combo.currentData()
+        if battery_type is None:
+            battery_type = 0
+        if restart_voltage_is_off(battery_type, self.restart_voltage_spin.value()):
+            self.restart_state_label.setText("= OFF")
+        else:
+            self.restart_state_label.setText("")
+
+    def _set_spin_raw(self, spin: QSpinBox, value: int):
+        """Set a spin box without clamping the raw device value.
+
+        If the charger reports a value outside the GUI range, the range is
+        widened instead of silently changing the value (which would be
+        written back on "Apply").
+        """
+        if value < spin.minimum():
+            spin.setMinimum(value)
+        if value > spin.maximum():
+            spin.setMaximum(value)
+        spin.setValue(value)
 
     def get_config(self) -> SlotConfig:
         """Get current configuration from UI."""
@@ -511,13 +624,13 @@ class SlotConfigWidget(QWidget):
         self.mode_combo.setCurrentIndex(
             self.mode_combo.findData(settings.operation_mode)
         )
-        self.capacity_spin.setValue(settings.capacity_mah)
-        self.charge_current_spin.setValue(settings.charge_current_ma)
-        self.discharge_current_spin.setValue(settings.discharge_current_ma)
-        self.end_voltage_spin.setValue(settings.charge_end_voltage_mv)
-        self.cut_voltage_spin.setValue(settings.discharge_cut_voltage_mv)
-        self.end_current_spin.setValue(settings.charge_end_current_ma)
-        self.discharge_end_current_spin.setValue(settings.discharge_reduce_current_ma)
+        self._set_spin_raw(self.capacity_spin, settings.capacity_mah)
+        self._set_spin_raw(self.charge_current_spin, settings.charge_current_ma)
+        self._set_spin_raw(self.discharge_current_spin, settings.discharge_current_ma)
+        self._set_spin_raw(self.end_voltage_spin, settings.charge_end_voltage_mv)
+        self._set_spin_raw(self.cut_voltage_spin, settings.discharge_cut_voltage_mv)
+        self._set_spin_raw(self.end_current_spin, settings.charge_end_current_ma)
+        self._set_spin_raw(self.discharge_end_current_spin, settings.discharge_reduce_current_ma)
         self.cycle_count_spin.setValue(settings.num_cycles)
         self.cycle_mode_combo.setCurrentIndex(settings.cycle_mode)
         self.charge_rest_time_spin.setValue(settings.charge_resting_min)
@@ -529,18 +642,19 @@ class SlotConfigWidget(QWidget):
         trickle_time_idx = self.trickle_time_combo.findData(settings.trickle_time)
         if trickle_time_idx >= 0:
             self.trickle_time_combo.setCurrentIndex(trickle_time_idx)
-        self.restart_voltage_spin.setValue(settings.restart_voltage_mv)
-        self.cut_temp_spin.setValue(settings.cut_temperature_c)
-        self.cut_time_spin.setValue(settings.cut_time_min)
+        self._set_spin_raw(self.restart_voltage_spin, settings.restart_voltage_mv)
+        self._set_spin_raw(self.cut_temp_spin, settings.cut_temperature_c)
+        self._set_spin_raw(self.cut_time_spin, settings.cut_time_min)
+        self._update_restart_label()
 
     def _populate_profiles(self):
         """Populate the profile combo box."""
         if not PROFILES_AVAILABLE:
             return
-        from mc3000_profiles import ProfileManager, BUILTIN_PRESETS
+        from mc3000_profiles import ProfileManager, ordered_preset_names
         pm = ProfileManager()
         # Add built-in profiles
-        for name in sorted(BUILTIN_PRESETS.keys()):
+        for name in ordered_preset_names():
             self.profile_combo.addItem(name, name)
         # Add user profiles
         user_profiles = pm.get_user_profiles()
@@ -577,6 +691,7 @@ class SlotConfigDialog(QDialog):
         self.setWindowTitle("Slot Configuration")
         self.setMinimumSize(580, 730)
         self.resize(620, 785)
+        self._slot_read_ok = [False] * 4
         self._setup_ui()
         self._read_all_configs(show_message=False)
 
@@ -593,6 +708,13 @@ class SlotConfigDialog(QDialog):
             self.tab_widget.addTab(widget, f"Slot {i + 1}")
 
         layout.addWidget(self.tab_widget)
+
+        # Shown when slot settings could not be read from the charger
+        self.read_status_label = QLabel("")
+        self.read_status_label.setWordWrap(True)
+        self.read_status_label.setStyleSheet("color: #CC0000; font-weight: bold;")
+        self.read_status_label.hide()
+        layout.addWidget(self.read_status_label)
 
         # Copy settings controls
         copy_group = QGroupBox("Copy Settings")
@@ -659,7 +781,7 @@ class SlotConfigDialog(QDialog):
         """Refresh profile combo boxes in all slot widgets."""
         if not PROFILES_AVAILABLE:
             return
-        from mc3000_profiles import ProfileManager, BUILTIN_PRESETS
+        from mc3000_profiles import ProfileManager, ordered_preset_names
         pm = ProfileManager()
         user_profiles = pm.get_user_profiles()
 
@@ -669,7 +791,7 @@ class SlotConfigDialog(QDialog):
                 widget.profile_combo.clear()
                 widget.profile_combo.addItem("-- Select Profile --", None)
                 # Add built-in profiles
-                for name in sorted(BUILTIN_PRESETS.keys()):
+                for name in ordered_preset_names():
                     widget.profile_combo.addItem(name, name)
                 # Add user profiles
                 if user_profiles:
@@ -718,6 +840,17 @@ class SlotConfigDialog(QDialog):
 
         current_slot = self.tab_widget.currentIndex()
         config = self.slot_widgets[current_slot].get_config()
+
+        if not self._slot_read_ok[current_slot]:
+            warn = QMessageBox.warning(
+                self, "Slot not read",
+                f"The settings of Slot {current_slot + 1} were never read from the "
+                "charger. The values shown may be defaults.\n\n"
+                "Apply them anyway?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if warn != QMessageBox.Yes:
+                return
 
         reply = QMessageBox.question(
             self, "Confirm Apply",
@@ -769,6 +902,25 @@ class SlotConfigDialog(QDialog):
     #     except Exception as e:
     #         QMessageBox.critical(self, "Error", f"Error reading configuration: {e}")
 
+    def _read_slots(self):
+        """Read all four slots; give up quickly when the charger is silent."""
+        failures = 0
+        for i in range(4):
+            ok = False
+            try:
+                # After two silent slots the charger is most likely busy
+                # (SkyRC app live view) - do not keep the GUI waiting.
+                settings = self.mc3000.get_slot_settings(i, tries=1 if failures else 2)
+                if settings:
+                    self.slot_widgets[i].set_from_slot_settings(settings)
+                    ok = True
+            except Exception:
+                pass  # Continue with other slots
+            if not ok:
+                failures += 1
+            self._slot_read_ok[i] = ok
+            self.tab_widget.setTabText(i, f"Slot {i + 1}" if ok else f"Slot {i + 1} (not read)")
+
     def _read_all_configs(self, show_message: bool = True):
         """Read configuration from all slots."""
         if not self.mc3000.is_connected():
@@ -777,14 +929,23 @@ class SlotConfigDialog(QDialog):
             return
 
         success_count = 0
-        for i in range(4):
-            try:
-                settings = self.mc3000.get_slot_settings(i)
-                if settings:
-                    self.slot_widgets[i].set_from_slot_settings(settings)
-                    success_count += 1
-            except Exception:
-                pass  # Continue with other slots
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._read_slots()
+        finally:
+            QApplication.restoreOverrideCursor()
+        success_count = sum(self._slot_read_ok)
+
+        failed = [str(i + 1) for i in range(4) if not self._slot_read_ok[i]]
+        if failed:
+            self.read_status_label.setText(
+                f"Could not read slot(s) {', '.join(failed)} from the charger - the values "
+                "shown there may be defaults or outdated. If the SkyRC app is "
+                "showing live data via Bluetooth, close that view and click \"Read All Slots\"."
+            )
+            self.read_status_label.show()
+        else:
+            self.read_status_label.hide()
 
         if show_message:
             if success_count > 0:

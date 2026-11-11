@@ -5,6 +5,30 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+## What's new in 1.9
+
+- **Internal resistance, energy, average voltage** per slot (USB `0x55`
+  bytes 16-17 / 20-21 / 25-26, verified against the SkyRC app), also in the
+  graphs and the CSV export.
+- **No more freezing**: USB polling runs in a background thread, all USB
+  access is serialised, and every answer is checked (command echo + slot).
+- **SkyRC app hint**: while the app shows live data via Bluetooth the
+  charger stops answering USB - the GUI keeps the last values greyed out
+  and says so instead of hanging.
+- **Full-run graphs** (up to 48 h, peak downsampling, h:mm:ss axis, restart
+  on a new program) and **CSV export** of all slots.
+- **Start preview**: "Start" shows what each slot will do and resets
+  finished slots automatically (stop, then start).
+- **Configure dialog**: unread slots are flagged, restart voltage "OFF" is
+  shown, device values are no longer clamped by the spin box ranges,
+  settings not used by the selected chemistry/mode are greyed out.
+- **Profiles**: "Idle" programs (keep a slot from charging), NiMH AA and
+  Li-Ion 21700 capacity tests (Cycle D>C); the old "Capacity Test (D>C)"
+  used Refresh mode, which ignores the cycle mode.
+- **Theme selector**: Auto (follows the OS), Light, Dark.
+- Window title shows the installed version; tests in `tests/`;
+  protocol notes in [docs/USB_REALTIME.md](docs/USB_REALTIME.md).
+
 ## Features
 
 - Real-time monitoring of all 4 charging slots
@@ -166,7 +190,15 @@ pytest
 
 ## Known Limitations
 
-- **Starting after "Finished"**: When a slot completes charging, you may need to press a button on the charger to clear the finished state before starting a new operation via USB.
+- **No per-slot start**: the USB start command starts every idle slot with a
+  cell. Use the built-in "Idle" profiles for slots that should stay idle.
+  Finished slots are reset automatically by "Start" (stop, then start).
+- **SkyRC app live view blocks USB**: while the app shows live data via
+  Bluetooth, the charger does not answer USB. The GUI shows a hint and keeps
+  the last values.
+- **Disch. End Current** always reads 500 mA - the byte layout of this
+  setting is not confirmed yet; set it in the app if it matters.
+- See [USB realtime data](docs/USB_REALTIME.md) for the verified 0x55 layout.
 - See [Protocol Notes](docs/protocol_notes.md) for more details.
 
 ## Firmware Updates (Linux)

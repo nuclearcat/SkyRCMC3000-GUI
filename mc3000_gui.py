@@ -6,9 +6,14 @@ Provides real-time monitoring of all 4 charging slots.
 Supports both USB and BLE (Bluetooth Low Energy) connections.
 """
 
-__version__ = "1.6.0"
+try:
+    from importlib.metadata import version as _pkg_version
+    __version__ = _pkg_version("skyrc-mc3000-gui")
+except Exception:  # running from a source checkout
+    __version__ = "1.9.1"
 
 import sys
+import time
 import logging
 import asyncio
 from typing import Optional, List, Union
@@ -21,6 +26,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QGridLayout,
     QLabel,
+    QComboBox,
     QPushButton,
     QFrame,
     QGroupBox,
@@ -41,6 +47,8 @@ from PySide6.QtGui import QFont, QPalette, QColor
 
 from mc3000_usb import MC3000USB, MC3000USBError, MC3000PermissionError
 from mc3000_protocol import SlotData, STATUS_CODES
+from mc3000_start import plan_start, ACTIVE, EMPTY_SLOT_MV
+from mc3000_theme import ThemeManager, THEME_MODES, THEME_LABELS
 
 # Try to import BLE module (optional dependency)
 try:
@@ -173,6 +181,69 @@ class BLEPollWorker(QThread):
             self._manager.start(self._device_address)
         except Exception as e:
             self.connection_lost.emit(str(e))
+
+
+class USBPollWorker(QThread):
+    """Worker thread polling the charger via USB.
+
+    Keeps the GUI responsive: blocking HID reads never run on the Qt
+    main thread. All USB access is serialised by the lock inside MC3000USB,
+    so dialogs may still talk to the device while the worker is running.
+    """
+
+    slot_data_received = Signal(int, object)  # slot_number, SlotData
+    no_response = Signal(int)                 # consecutive failed cycles
+    response_restored = Signal()
+    poll_error = Signal(str)
+
+    # After this many cycles without any answer we assume the charger is
+    # busy serving the SkyRC app via Bluetooth.
+    NO_RESPONSE_CYCLES = 2
+
+    def __init__(self, usb: MC3000USB, interval_s: float = 1.0, parent=None):
+        super().__init__(parent)
+        self._usb = usb
+        self._interval = interval_s
+        self._running = True
+        self._failed_cycles = 0
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        while self._running and self._usb.is_connected():
+            cycle_start = time.monotonic()
+            got_any = False
+            for slot in range(4):
+                if not self._running:
+                    return
+                try:
+                    data = self._usb.get_slot_data(slot)
+                except MC3000USBError as e:
+                    self.poll_error.emit(str(e))
+                    data = None
+                except Exception as e:  # never let the thread die silently
+                    self.poll_error.emit(f"Unexpected error: {e}")
+                    data = None
+                if data is not None:
+                    got_any = True
+                    self.slot_data_received.emit(slot, data)
+
+            if got_any:
+                if self._failed_cycles >= self.NO_RESPONSE_CYCLES:
+                    self.response_restored.emit()
+                self._failed_cycles = 0
+            else:
+                self._failed_cycles += 1
+                if self._failed_cycles >= self.NO_RESPONSE_CYCLES:
+                    self.no_response.emit(self._failed_cycles)
+
+            # Sleep in small steps so stop() takes effect quickly
+            while self._running:
+                remaining = self._interval - (time.monotonic() - cycle_start)
+                if remaining <= 0:
+                    break
+                time.sleep(min(remaining, 0.1))
 
 
 class DeviceSelectionDialog(QDialog):
@@ -441,6 +512,9 @@ class SlotWidget(QGroupBox):
         self.temperature_label = self._create_value_label()
         self.power_label = self._create_value_label()
         self.time_label = self._create_value_label()
+        self.resistance_label = self._create_value_label()
+        self.energy_label = self._create_value_label()
+        self.avg_voltage_label = self._create_value_label()
 
         row = 0
         measurements_layout.addWidget(QLabel("Voltage:"), row, 0)
@@ -463,6 +537,18 @@ class SlotWidget(QGroupBox):
         measurements_layout.addWidget(self.power_label, row, 1)
 
         row += 1
+        measurements_layout.addWidget(QLabel("Energy:"), row, 0)
+        measurements_layout.addWidget(self.energy_label, row, 1)
+
+        row += 1
+        measurements_layout.addWidget(QLabel("Avg. Volt:"), row, 0)
+        measurements_layout.addWidget(self.avg_voltage_label, row, 1)
+
+        row += 1
+        measurements_layout.addWidget(QLabel("Resistance:"), row, 0)
+        measurements_layout.addWidget(self.resistance_label, row, 1)
+
+        row += 1
         measurements_layout.addWidget(QLabel("Time:"), row, 0)
         measurements_layout.addWidget(self.time_label, row, 1)
 
@@ -472,7 +558,7 @@ class SlotWidget(QGroupBox):
 
         # Set minimum size
         self.setMinimumWidth(180)
-        self.setMinimumHeight(280)
+        self.setMinimumHeight(330)
 
     def _create_value_label(self) -> QLabel:
         """Create a styled value label."""
@@ -518,6 +604,23 @@ class SlotWidget(QGroupBox):
         self.power_label.setText(f"{data.power_w:.2f} W")
         self.time_label.setText(data.work_time_formatted)
 
+        if data.energy_mwh is not None:
+            self.energy_label.setText(f"{data.energy_mwh / 1000:.3f} Wh")
+        else:
+            self.energy_label.setText("--- Wh")
+        if data.average_voltage_mv:
+            self.avg_voltage_label.setText(f"{data.average_voltage_mv / 1000:.3f} V")
+        else:
+            self.avg_voltage_label.setText("--- V")
+        if data.internal_resistance_mohm:
+            self.resistance_label.setText(f"{data.internal_resistance_mohm} m\u03a9")
+        else:
+            self.resistance_label.setText("--- m\u03a9")
+
+    def set_stale(self, stale: bool):
+        """Grey out values when the charger stopped answering."""
+        self.setEnabled(not stale)
+
     def clear_data(self):
         """Clear all displayed data."""
         self.battery_label.setText("---")
@@ -533,6 +636,10 @@ class SlotWidget(QGroupBox):
         self.temperature_label.setText("--- \u00b0C")
         self.power_label.setText("--- W")
         self.time_label.setText("--:--:--")
+        self.energy_label.setText("--- Wh")
+        self.avg_voltage_label.setText("--- V")
+        self.resistance_label.setText("--- m\u03a9")
+        self.setEnabled(True)
 
 
 class MainWindow(QMainWindow):
@@ -551,11 +658,15 @@ class MainWindow(QMainWindow):
         self.ble_poll_worker: Optional[BLEPollWorker] = None
         self._ble_device_name: str = ""
 
-        # USB polling timer (BLE uses worker thread)
-        self.poll_timer = QTimer(self)
-        self.poll_timer.timeout.connect(self._poll_device)
+        # USB polling runs in a worker thread (like BLE)
+        self.usb_poll_worker: Optional[USBPollWorker] = None
+        self._usb_slot_cache: List[Optional[SlotData]] = [None] * 4
 
+        self.theme = ThemeManager(QApplication.instance())
         self._setup_ui()
+        self.theme.apply()
+        if self.graph_widget:
+            self.theme.add_listener(self.graph_widget.apply_theme)
         # Show connection dialog on startup
         self._show_connection_dialog()
 
@@ -601,6 +712,17 @@ class MainWindow(QMainWindow):
 
         header_layout.addStretch()
 
+        # Theme selector (Auto follows the operating system)
+        header_layout.addWidget(QLabel("Theme:"))
+        self.theme_combo = QComboBox()
+        for mode in THEME_MODES:
+            self.theme_combo.addItem(THEME_LABELS[mode], mode)
+        self.theme_combo.setCurrentIndex(THEME_MODES.index(self.theme.mode))
+        self.theme_combo.currentIndexChanged.connect(
+            lambda _i: self.theme.set_mode(self.theme_combo.currentData()))
+        header_layout.addWidget(self.theme_combo)
+        header_layout.addSpacing(20)
+
         # Show/hide graphs checkbox
         if GRAPHS_AVAILABLE:
             self.show_graphs_cb = QCheckBox("Show Graphs")
@@ -615,7 +737,9 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.connection_indicator)
 
         self.transport_label = QLabel("")
-        self.transport_label.setStyleSheet("font-weight: bold;")
+        bold = self.transport_label.font()
+        bold.setBold(True)
+        self.transport_label.setFont(bold)
         header_layout.addWidget(self.transport_label)
 
         self.connection_status = QLabel("Disconnected")
@@ -718,7 +842,7 @@ class MainWindow(QMainWindow):
                 )
 
     def _on_start_clicked(self):
-        """Start charger processing for all configured slots."""
+        """Show what a start would do, then start (resetting finished slots if needed)."""
         if not self._is_connected():
             QMessageBox.warning(self, "Not Connected", "Please connect to the charger first.")
             return
@@ -732,19 +856,70 @@ class MainWindow(QMainWindow):
             )
             return
 
-        reply = QMessageBox.question(
-            self,
-            "Start Charger",
-            "Start charging now?\n\n"
-            "This starts all slots that are configured and in standby.\n"
-            "Make sure you have applied the desired slot configuration first.",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
+        data = list(self._usb_slot_cache)
+        settings = [None] * 4
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            for i, d in enumerate(data):
+                if d is not None and d.status not in ACTIVE and d.voltage_mv >= EMPTY_SLOT_MV:
+                    try:
+                        settings[i] = self.mc3000.get_slot_settings(i, tries=1)
+                    except Exception:
+                        settings[i] = None
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        plan = plan_start(data, settings)
+        lines = [f"Slot {p.slot + 1}: {p.text}" for p in plan.slots]
+        text = "\n".join(lines)
+
+        if not plan.starting:
+            QMessageBox.information(self, "Start Charger",
+                                    f"No slot would start.\n\n{text}")
             return
 
-        if self.mc3000.start_processing():
-            self.status_bar.showMessage("Start command sent")
+        box = QMessageBox(self)
+        box.setWindowTitle("Start Charger")
+        box.setIcon(QMessageBox.Question)
+        info = ("The charger has no per-slot start: every idle slot with a cell starts.\n"
+                "Assign a do-nothing program (e.g. LiIon Charge, target 2.50 V) to slots "
+                "that should stay idle.")
+        if plan.needs_reset and plan.any_running:
+            info += ("\n\nSome slots are finished and need a reset first, but other slots "
+                     "are still running. A reset (stop) would abort the running slots.")
+            box.setText(f"Start charging now?\n\n{text}")
+            box.setInformativeText(info)
+            restart_btn = box.addButton("Stop all && start", QMessageBox.DestructiveRole)
+            start_btn = box.addButton("Start without reset", QMessageBox.AcceptRole)
+            box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(start_btn)
+        else:
+            if plan.needs_reset:
+                info += "\n\nFinished slots are reset automatically before starting."
+            box.setText(f"Start charging now?\n\n{text}")
+            box.setInformativeText(info)
+            start_btn = box.addButton("Start", QMessageBox.AcceptRole)
+            restart_btn = None
+            box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(start_btn)
+        box.exec()
+        clicked = box.clickedButton()
+
+        if clicked is restart_btn and restart_btn is not None:
+            do_reset = True
+        elif clicked is start_btn:
+            do_reset = plan.needs_reset and not plan.any_running
+        else:
+            return
+
+        ok = True
+        if do_reset:
+            ok = self.mc3000.stop_processing()
+            time.sleep(0.5)
+        ok = ok and self.mc3000.start_processing()
+        if ok:
+            self.status_bar.showMessage(
+                "Reset + start command sent" if do_reset else "Start command sent")
         else:
             QMessageBox.warning(self, "Start Failed", "Failed to start charging.")
 
@@ -777,12 +952,14 @@ class MainWindow(QMainWindow):
             # Update UI for connected state
             self._update_connected_ui()
 
-            # Start polling
-            self.poll_timer.start(1000)
-            self.status_bar.showMessage("Connected via USB - Monitoring active")
+            if self.mc3000.firmware_version:
+                self.status_bar.showMessage(
+                    f"Connected via USB (firmware {self.mc3000.firmware_version}) - Monitoring active")
+            else:
+                self.status_bar.showMessage("Connected via USB - Monitoring active")
 
-            # Do initial poll
-            self._poll_device()
+            # Start polling in background thread
+            self._start_usb_worker()
 
         except MC3000PermissionError as e:
             msg = QMessageBox(self)
@@ -878,10 +1055,65 @@ class MainWindow(QMainWindow):
         logger.warning(f"BLE poll error: {error}")
         self.status_bar.showMessage(f"BLE error: {error}")
 
+    def _start_usb_worker(self):
+        self._stop_usb_worker()
+        self._usb_slot_cache = [None] * 4
+        self.usb_poll_worker = USBPollWorker(self.mc3000, 1.0)
+        self.usb_poll_worker.slot_data_received.connect(self._on_usb_slot_data)
+        self.usb_poll_worker.no_response.connect(self._on_usb_no_response)
+        self.usb_poll_worker.response_restored.connect(self._on_usb_response_restored)
+        self.usb_poll_worker.poll_error.connect(self._on_usb_poll_error)
+        self.usb_poll_worker.start()
+
+    def _stop_usb_worker(self):
+        if self.usb_poll_worker is not None:
+            self.usb_poll_worker.stop()
+            self.usb_poll_worker.wait(3000)
+            self.usb_poll_worker = None
+
+    @Slot(int, object)
+    def _on_usb_slot_data(self, slot: int, data: SlotData):
+        if self.transport_type != TRANSPORT_USB or slot >= len(self.slot_widgets):
+            return
+        self._usb_slot_cache[slot] = data
+        self.slot_widgets[slot].set_stale(False)
+        self.slot_widgets[slot].update_data(data)
+        if self.graph_widget:
+            self.graph_widget.update_data(slot, data)
+
+        valid = [d for d in self._usb_slot_cache if d is not None]
+        if valid:
+            internal_temp_c = valid[0].internal_temp_c
+            total_power_w = sum(abs(d.power_w) for d in valid if d.status in (1, 2))
+            self.firmware_label.setText(
+                f"Charger Temp: {internal_temp_c:.1f} \u00b0C    |    Total Power: {total_power_w:.2f} W"
+            )
+
+    @Slot(int)
+    def _on_usb_no_response(self, cycles: int):
+        # Keep the last values on screen, just mark them as stale
+        for w in self.slot_widgets:
+            w.set_stale(True)
+        self.connection_indicator.setStyleSheet("color: #FFAA00; font-size: 16px;")
+        self.status_bar.showMessage(
+            "No response from charger - is the SkyRC app showing live data via "
+            "Bluetooth? (The MC3000 stops answering USB while the app reads live data.)"
+        )
+
+    @Slot()
+    def _on_usb_response_restored(self):
+        self.connection_indicator.setStyleSheet("color: #00AA00; font-size: 16px;")
+        self.status_bar.showMessage("Charger is answering again - Monitoring active")
+
+    @Slot(str)
+    def _on_usb_poll_error(self, error: str):
+        logger.error(f"Poll error: {error}")
+        self.status_bar.showMessage(f"Communication error: {error}")
+
     def _disconnect(self):
         """Disconnect from device and update UI."""
-        # Stop USB polling timer
-        self.poll_timer.stop()
+        # Stop USB polling worker
+        self._stop_usb_worker()
 
         # Stop BLE worker if running
         if self.ble_poll_worker is not None:
@@ -919,47 +1151,9 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage("Disconnected")
 
-    def _poll_device(self):
-        """Poll device for updated slot data (USB only - BLE uses worker thread)."""
-        if self.transport_type != TRANSPORT_USB:
-            return
-
-        if not self._is_connected():
-            return
-
-        try:
-            # Query all slots
-            internal_temp_c = None
-            total_power_w = 0.0
-            for i, slot_widget in enumerate(self.slot_widgets):
-                data = self.mc3000.get_slot_data(i)
-                slot_widget.update_data(data)
-                if data:
-                    if internal_temp_c is None:
-                        internal_temp_c = data.internal_temp_c
-                    total_power_w += abs(data.power_w)
-
-                # Update graphs if available
-                if self.graph_widget and data:
-                    self.graph_widget.update_data(i, data)
-            if internal_temp_c is not None:
-                self.firmware_label.setText(
-                    f"Charger Temp: {internal_temp_c:.1f} \u00b0C    |    Total Power: {total_power_w:.2f} W"
-                )
-            else:
-                self.firmware_label.setText("")
-
-        except MC3000USBError as e:
-            logger.error(f"Poll error: {e}")
-            self.status_bar.showMessage(f"Communication error: {e}")
-            # Try to recover on next poll, but don't disconnect immediately
-        except Exception as e:
-            logger.error(f"Unexpected poll error: {e}")
-            self.status_bar.showMessage(f"Error: {e}")
-
     def closeEvent(self, event):
         """Handle window close event."""
-        self.poll_timer.stop()
+        self._stop_usb_worker()
 
         # Stop BLE worker if running
         if self.ble_poll_worker is not None:

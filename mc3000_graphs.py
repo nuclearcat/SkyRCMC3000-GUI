@@ -3,11 +3,16 @@ MC3000 Real-time Graphs
 
 Real-time plotting widgets for monitoring battery charging data.
 Uses pyqtgraph for fast, interactive plots.
+
+The history of a slot covers the whole run of a program (up to 48 h at
+1 Hz by default) and is shared between the "All Slots" view and the
+per-slot tabs. It can be exported as CSV.
 """
 
-from collections import deque
-from typing import Optional, Dict, List
+import csv
 import time
+from datetime import datetime
+from typing import Optional, Dict, List
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -18,7 +23,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QCheckBox,
     QPushButton,
-    QGroupBox,
+    QFileDialog,
+    QMessageBox,
 )
 from PySide6.QtCore import Qt
 
@@ -38,322 +44,410 @@ SLOT_COLORS = [
     (214, 39, 40),    # Red
 ]
 
-# Line styles
-VOLTAGE_PEN = {'width': 2}
-CURRENT_PEN = {'width': 2, 'style': Qt.DashLine}
-CAPACITY_PEN = {'width': 2, 'style': Qt.DotLine}
+# Statuses that mean "a program is running" (charging, discharging, resting)
+ACTIVE_STATUSES = (1, 2, 3)
+STATUS_FINISHED = 4
+
+# 48 hours at one sample per second
+DEFAULT_MAX_POINTS = 48 * 3600
+
+# key, label, unit, color, default visible in slot view
+METRICS = [
+    ('voltage', 'Voltage', 'V', (31, 119, 180), True),
+    ('current', 'Current', 'A', (255, 127, 14), True),
+    ('capacity', 'Capacity', 'mAh', (44, 160, 44), True),
+    ('energy', 'Energy', 'Wh', (23, 190, 207), False),
+    ('power', 'Power', 'W', (140, 86, 75), False),
+    ('temperature', 'Batt Temp', '°C', (214, 39, 40), False),
+    ('internal_temp', 'Int Temp', '°C', (148, 103, 189), False),
+    ('resistance', 'Resistance', 'mΩ', (127, 127, 127), False),
+]
+METRIC_KEYS = [m[0] for m in METRICS]
+
+CSV_COLUMNS = [
+    ('slot', 'slot'),
+    ('timestamp', 'timestamp'),
+    ('elapsed_s', 'time'),
+    ('work_time_s', 'work_time'),
+    ('status', 'status'),
+    ('voltage_v', 'voltage'),
+    ('current_a', 'current'),
+    ('capacity_mah', 'capacity'),
+    ('energy_wh', 'energy'),
+    ('power_w', 'power'),
+    ('battery_temp_c', 'temperature'),
+    ('charger_temp_c', 'internal_temp'),
+    ('resistance_mohm', 'resistance'),
+    ('avg_voltage_v', 'avg_voltage'),
+]
+
+
+class TimeAxisItem(pg.AxisItem):
+    """X axis showing elapsed seconds as H:MM:SS."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Values are always seconds - no "(x0.001)" / "ks" scaling
+        self.enableAutoSIPrefix(False)
+
+    def tickStrings(self, values, scale, spacing):
+        out = []
+        for v in values:
+            v = int(round(v))
+            sign = '-' if v < 0 else ''
+            v = abs(v)
+            h, rem = divmod(v, 3600)
+            m, s = divmod(rem, 60)
+            out.append(f"{sign}{h}:{m:02d}:{s:02d}")
+        return out
 
 
 class SlotDataHistory:
-    """Stores historical data for a single slot."""
+    """Stores the history of one slot in growable numpy arrays."""
 
-    def __init__(self, max_points: int = 3600):
-        """
-        Initialize data history.
+    FIELDS = ['time', 'wall', 'work_time', 'status'] + METRIC_KEYS + ['avg_voltage']
 
-        Args:
-            max_points: Maximum number of data points to store (default 1 hour at 1Hz)
-        """
+    def __init__(self, max_points: int = DEFAULT_MAX_POINTS):
         self.max_points = max_points
-        self.timestamps: deque = deque(maxlen=max_points)
-        self.voltage: deque = deque(maxlen=max_points)
-        self.current: deque = deque(maxlen=max_points)
-        self.capacity: deque = deque(maxlen=max_points)
-        self.temperature: deque = deque(maxlen=max_points)
-        self.internal_temp: deque = deque(maxlen=max_points)
-        self.power: deque = deque(maxlen=max_points)
+        self._capacity = 0
+        self._n = 0
+        self._data: Dict[str, np.ndarray] = {}
         self.start_time: Optional[float] = None
+        self._last_status: Optional[int] = None
+        self._alloc(1024)
 
-    def add_data(self, data: SlotData) -> None:
-        """Add a data point from SlotData."""
+    def _alloc(self, capacity: int) -> None:
+        new = {k: np.full(capacity, np.nan) for k in self.FIELDS}
+        for k, arr in self._data.items():
+            new[k][:self._n] = arr[:self._n]
+        self._data = new
+        self._capacity = capacity
+
+    def _append(self, values: Dict[str, float]) -> None:
+        if self._n >= self.max_points:
+            # Drop the oldest 10 % to keep memory bounded
+            drop = max(1, self.max_points // 10)
+            for arr in self._data.values():
+                arr[:self._n - drop] = arr[drop:self._n]
+            self._n -= drop
+        if self._n >= self._capacity:
+            self._alloc(min(self._capacity * 2, self.max_points))
+        for k in self.FIELDS:
+            self._data[k][self._n] = values.get(k, np.nan)
+        self._n += 1
+
+    def add_data(self, data: SlotData) -> bool:
+        """
+        Add a data point.
+
+        Rules:
+        - nothing is recorded in standby / empty slot
+        - a new start (inactive -> active) begins a fresh history
+        - while finished or stopped by an error, only the first sample is kept
+
+        Returns:
+            True if a point was added (or the history was reset)
+        """
+        status = data.status
+        prev = self._last_status
+        self._last_status = status
+
+        active = status in ACTIVE_STATUSES
+        if active and prev is not None and prev not in ACTIVE_STATUSES and self._n > 0:
+            self.clear()
+            self._last_status = status
+
+        if status == 0:
+            return False
+        # Finished or error (e.g. "Time Cut"): keep only the first sample
+        if not active and prev == status and self._n > 0:
+            return False
+        if not active and status != STATUS_FINISHED and not data.is_error:
+            return False
+
         now = time.time()
         if self.start_time is None:
             self.start_time = now
 
-        elapsed = now - self.start_time
-        self.timestamps.append(elapsed)
-        self.voltage.append(data.voltage_v)
-        self.current.append(data.current_a)
-        self.capacity.append(data.capacity_mah)
-        self.temperature.append(data.temperature_c)
-        self.internal_temp.append(data.internal_temp_c)
-        self.power.append(data.power_w)
+        def opt(v, scale=1.0):
+            return np.nan if v is None else v / scale
+
+        self._append({
+            'time': now - self.start_time,
+            'wall': now,
+            'work_time': data.work_time_seconds,
+            'status': status,
+            'voltage': data.voltage_v,
+            'current': data.current_a,
+            'capacity': data.capacity_mah,
+            'energy': opt(data.energy_mwh, 1000.0),
+            'power': data.power_w,
+            'temperature': data.temperature_c,
+            'internal_temp': data.internal_temp_c,
+            'resistance': np.nan if not data.internal_resistance_mohm
+            else data.internal_resistance_mohm,
+            'avg_voltage': opt(data.average_voltage_mv, 1000.0),
+        })
+        return True
 
     def clear(self) -> None:
         """Clear all stored data."""
-        self.timestamps.clear()
-        self.voltage.clear()
-        self.current.clear()
-        self.capacity.clear()
-        self.temperature.clear()
-        self.internal_temp.clear()
-        self.power.clear()
+        self._n = 0
+        self._data = {}
+        self._alloc(1024)
         self.start_time = None
+        self._last_status = None
 
     def get_arrays(self) -> Dict[str, np.ndarray]:
-        """Get data as numpy arrays for plotting."""
-        return {
-            'time': np.array(self.timestamps),
-            'voltage': np.array(self.voltage),
-            'current': np.array(self.current),
-            'capacity': np.array(self.capacity),
-            'temperature': np.array(self.temperature),
-            'internal_temp': np.array(self.internal_temp),
-            'power': np.array(self.power),
-        }
+        """Get data as numpy arrays (views, do not modify)."""
+        return {k: arr[:self._n] for k, arr in self._data.items()}
 
     def __len__(self) -> int:
-        return len(self.timestamps)
+        return self._n
+
+
+def _make_curve(plot_widget: pg.PlotWidget, name: str, color) -> pg.PlotDataItem:
+    curve = plot_widget.plot([], [], name=name, pen=pg.mkPen(color=color, width=2))
+    # Long runs (many hours) stay fast with peak downsampling
+    curve.setDownsampling(auto=True, method='peak')
+    curve.setClipToView(True)
+    return curve
+
+
+def _new_plot_widget() -> pg.PlotWidget:
+    pw = pg.PlotWidget(axisItems={'bottom': TimeAxisItem(orientation='bottom')})
+    pw.showGrid(x=True, y=True, alpha=0.3)
+    pw.setLabel('bottom', 'Time (h:mm:ss)')
+    # Units are in the axis label already - no "(x0.001)" scaling
+    pw.getAxis('left').enableAutoSIPrefix(False)
+    pw.addLegend(offset=(10, 10))
+    return pw
 
 
 class SlotGraphWidget(QWidget):
     """Graph widget for a single slot with selectable metrics."""
 
-    METRICS = [
-        ('voltage', 'Voltage', 'V', (31, 119, 180)),
-        ('current', 'Current', 'A', (255, 127, 14)),
-        ('capacity', 'Capacity', 'mAh', (44, 160, 44)),
-        ('temperature', 'Batt Temp', '°C', (214, 39, 40)),
-        ('internal_temp', 'Int Temp', '°C', (148, 103, 189)),
-        ('power', 'Power', 'W', (140, 86, 75)),
-    ]
-
-    def __init__(self, slot_number: int, parent: Optional[QWidget] = None):
+    def __init__(self, slot_number: int, history: SlotDataHistory,
+                 parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.slot_number = slot_number
-        self.history = SlotDataHistory()
-        self.color = SLOT_COLORS[slot_number % len(SLOT_COLORS)]
+        self.history = history
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Controls row
         controls_layout = QHBoxLayout()
-
-        # Metric checkboxes
         controls_layout.addWidget(QLabel("Show:"))
         self.metric_checkboxes: Dict[str, QCheckBox] = {}
-
-        # Default: show voltage, current, capacity
-        default_metrics = ['voltage', 'current', 'capacity']
-
-        for key, name, unit, color in self.METRICS:
+        for key, name, unit, color, default in METRICS:
             cb = QCheckBox(name)
-            cb.setChecked(key in default_metrics)
+            cb.setChecked(default)
             cb.setStyleSheet(f"color: rgb({color[0]}, {color[1]}, {color[2]})")
-            cb.stateChanged.connect(self._update_plots)
+            cb.stateChanged.connect(self.refresh)
             controls_layout.addWidget(cb)
             self.metric_checkboxes[key] = cb
-
         controls_layout.addStretch()
 
-        # Clear button
-        clear_btn = QPushButton("Clear")
-        clear_btn.setFixedWidth(60)
-        clear_btn.clicked.connect(self.clear_data)
-        controls_layout.addWidget(clear_btn)
-
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.setFixedWidth(60)
+        controls_layout.addWidget(self.clear_btn)
         layout.addLayout(controls_layout)
 
-        # Create plot widget
-        self.plot_widget = pg.PlotWidget()
-        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        self.plot_widget.setLabel('bottom', 'Time', units='s')
-        self.plot_widget.addLegend(offset=(10, 10))
-
-        # Create curves for each metric
+        self.plot_widget = _new_plot_widget()
         self.curves: Dict[str, pg.PlotDataItem] = {}
-        for key, name, unit, color in self.METRICS:
-            curve = self.plot_widget.plot(
-                [], [], name=f'{name} ({unit})',
-                pen=pg.mkPen(color=color, width=2)
-            )
-            curve.hide()  # Hide initially
+        for key, name, unit, color, default in METRICS:
+            curve = _make_curve(self.plot_widget, f'{name} ({unit})', color)
+            curve.hide()
             self.curves[key] = curve
-
         layout.addWidget(self.plot_widget)
 
-    def _update_plots(self) -> None:
-        """Update plot visibility and data."""
-        if len(self.history) == 0:
-            return
-
+    def refresh(self) -> None:
+        """Redraw from the shared history."""
         arrays = self.history.get_arrays()
-
-        for key, name, unit, color in self.METRICS:
+        t = arrays['time']
+        for key in METRIC_KEYS:
             curve = self.curves[key]
-            checkbox = self.metric_checkboxes[key]
-
-            if checkbox.isChecked():
-                data = arrays[key]
-                # Use absolute value for current
+            if self.metric_checkboxes[key].isChecked() and len(t) > 0:
+                y = arrays[key]
                 if key == 'current':
-                    data = np.abs(data)
-                curve.setData(arrays['time'], data)
+                    y = np.abs(y)
+                curve.setData(t, y, connect='finite')
                 curve.show()
             else:
+                curve.setData([], [])
                 curve.hide()
 
-    def update_data(self, data: Optional[SlotData]) -> None:
-        """Update the graph with new data."""
-        if data is None:
-            return
-
-        # Only record data if slot is active (not standby)
-        if data.status > 0:
-            self.history.add_data(data)
-            self._update_plots()
-
-    def clear_data(self) -> None:
-        """Clear all graph data."""
-        self.history.clear()
-        for curve in self.curves.values():
-            curve.setData([], [])
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh()
 
 
 class MultiSlotGraphWidget(QWidget):
-    """Combined graph widget showing all slots or selected metrics."""
+    """Combined graph showing one metric for all slots."""
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, histories: List[SlotDataHistory], parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.histories: List[SlotDataHistory] = [SlotDataHistory() for _ in range(4)]
+        self.histories = histories
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
 
-        # Controls
         controls_layout = QHBoxLayout()
-
-        # Metric selector
         controls_layout.addWidget(QLabel("Show:"))
         self.metric_combo = QComboBox()
-        self.metric_combo.addItems([
-            "Voltage (V)",
-            "Current (A)",
-            "Capacity (mAh)",
-            "Temperature (°C)",
-            "Power (W)",
-        ])
-        self.metric_combo.currentIndexChanged.connect(self._update_plots)
+        self.metric_combo.addItems([f"{name} ({unit})" for _, name, unit, _, _ in METRICS])
+        self.metric_combo.currentIndexChanged.connect(self.refresh)
         controls_layout.addWidget(self.metric_combo)
-
         controls_layout.addSpacing(20)
 
-        # Slot checkboxes
         self.slot_checkboxes: List[QCheckBox] = []
         for i in range(4):
             cb = QCheckBox(f"Slot {i + 1}")
             cb.setChecked(True)
-            cb.stateChanged.connect(self._update_plots)
+            cb.stateChanged.connect(self.refresh)
             color = SLOT_COLORS[i]
             cb.setStyleSheet(f"color: rgb({color[0]}, {color[1]}, {color[2]})")
             controls_layout.addWidget(cb)
             self.slot_checkboxes.append(cb)
-
         controls_layout.addStretch()
 
-        # Clear button
-        clear_btn = QPushButton("Clear All")
-        clear_btn.clicked.connect(self.clear_all_data)
-        controls_layout.addWidget(clear_btn)
-
+        self.clear_btn = QPushButton("Clear All")
+        controls_layout.addWidget(self.clear_btn)
         layout.addLayout(controls_layout)
 
-        # Plot widget
-        self.plot_widget = pg.PlotWidget()
-        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        self.plot_widget.setLabel('bottom', 'Time', units='s')
-        self.plot_widget.addLegend(offset=(10, 10))
-
-        # Create curves for each slot
-        self.curves: List[pg.PlotDataItem] = []
-        for i in range(4):
-            color = SLOT_COLORS[i]
-            curve = self.plot_widget.plot(
-                [], [],
-                name=f'Slot {i + 1}',
-                pen=pg.mkPen(color=color, width=2)
-            )
-            self.curves.append(curve)
-
+        self.plot_widget = _new_plot_widget()
+        self.curves: List[pg.PlotDataItem] = [
+            _make_curve(self.plot_widget, f'Slot {i + 1}', SLOT_COLORS[i]) for i in range(4)
+        ]
         layout.addWidget(self.plot_widget)
 
-    def _get_metric_data(self, arrays: Dict[str, np.ndarray]) -> np.ndarray:
-        """Get the currently selected metric data."""
-        metric_idx = self.metric_combo.currentIndex()
-        metric_keys = ['voltage', 'current', 'capacity', 'temperature', 'power']
-        return arrays[metric_keys[metric_idx]]
-
-    def _get_metric_unit(self) -> str:
-        """Get the unit for the currently selected metric."""
-        units = ['V', 'A', 'mAh', '°C', 'W']
-        return units[self.metric_combo.currentIndex()]
-
-    def _update_plots(self) -> None:
-        """Update all plot curves."""
-        self.plot_widget.setLabel('left', self.metric_combo.currentText().split('(')[0].strip(),
-                                   units=self._get_metric_unit())
-
-        for i, (history, curve, checkbox) in enumerate(
-            zip(self.histories, self.curves, self.slot_checkboxes)
-        ):
-            if checkbox.isChecked() and len(history) > 0:
+    def refresh(self) -> None:
+        idx = self.metric_combo.currentIndex()
+        key, name, unit, _, _ = METRICS[idx]
+        self.plot_widget.setLabel('left', f"{name} ({unit})")
+        for history, curve, cb in zip(self.histories, self.curves, self.slot_checkboxes):
+            if cb.isChecked() and len(history) > 0:
                 arrays = history.get_arrays()
-                data = self._get_metric_data(arrays)
-                # Use absolute value for current
-                if self.metric_combo.currentIndex() == 1:
-                    data = np.abs(data)
-                curve.setData(arrays['time'], data)
+                y = arrays[key]
+                if key == 'current':
+                    y = np.abs(y)
+                curve.setData(arrays['time'], y, connect='finite')
                 curve.show()
             else:
+                curve.setData([], [])
                 curve.hide()
 
-    def update_data(self, slot: int, data: Optional[SlotData]) -> None:
-        """Update data for a specific slot."""
-        if data is None or slot < 0 or slot > 3:
-            return
-
-        # Only record data if slot is active
-        if data.status > 0:
-            self.histories[slot].add_data(data)
-            self._update_plots()
-
-    def clear_all_data(self) -> None:
-        """Clear all graph data."""
-        for history in self.histories:
-            history.clear()
-        for curve in self.curves:
-            curve.setData([], [])
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh()
 
 
 class GraphTabWidget(QTabWidget):
-    """Tabbed widget containing individual slot graphs and combined view."""
+    """Tabbed widget containing the combined view and one tab per slot."""
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None, max_points: int = DEFAULT_MAX_POINTS):
         super().__init__(parent)
+        self.histories: List[SlotDataHistory] = [SlotDataHistory(max_points) for _ in range(4)]
 
-        # Combined view (all slots)
-        self.multi_graph = MultiSlotGraphWidget()
+        self.multi_graph = MultiSlotGraphWidget(self.histories)
+        self.multi_graph.clear_btn.clicked.connect(self.clear_all_data)
         self.addTab(self.multi_graph, "All Slots")
 
-        # Individual slot graphs
         self.slot_graphs: List[SlotGraphWidget] = []
         for i in range(4):
-            graph = SlotGraphWidget(i)
+            graph = SlotGraphWidget(i, self.histories[i])
+            graph.clear_btn.clicked.connect(lambda _=False, s=i: self.clear_slot(s))
             self.slot_graphs.append(graph)
             self.addTab(graph, f"Slot {i + 1}")
 
+        self.export_btn = QPushButton("Export CSV...")
+        self.export_btn.clicked.connect(self.export_csv_dialog)
+        self.setCornerWidget(self.export_btn, Qt.TopRightCorner)
+
+    def apply_theme(self, dark: bool) -> None:
+        """Switch all plots between light and dark colours."""
+        bg, fg = ((30, 30, 30), (220, 220, 220)) if dark else ('w', 'k')
+        widgets = [self.multi_graph.plot_widget] + [g.plot_widget for g in self.slot_graphs]
+        for pw in widgets:
+            pw.setBackground(bg)
+            for name in ('left', 'bottom'):
+                axis = pw.getAxis(name)
+                axis.setPen(fg)
+                axis.setTextPen(fg)
+            legend = pw.getPlotItem().legend
+            if legend is not None:
+                legend.setLabelTextColor(fg)
+                for _sample, label in legend.items:  # existing entries
+                    label.setText(label.text, color=fg)
+
+    def _refresh_visible(self, slot: Optional[int] = None) -> None:
+        current = self.currentWidget()
+        if current is self.multi_graph:
+            self.multi_graph.refresh()
+        elif slot is None or current is self.slot_graphs[slot]:
+            if hasattr(current, 'refresh'):
+                current.refresh()
+
     def update_data(self, slot: int, data: Optional[SlotData]) -> None:
-        """Update data for a specific slot."""
-        if 0 <= slot < 4:
-            self.slot_graphs[slot].update_data(data)
-            self.multi_graph.update_data(slot, data)
+        """Record a sample and redraw the visible graph if needed."""
+        if data is None or not 0 <= slot < 4:
+            return
+        if self.histories[slot].add_data(data) and self.isVisible():
+            self._refresh_visible(slot)
+
+    def clear_slot(self, slot: int) -> None:
+        self.histories[slot].clear()
+        self._refresh_visible()
 
     def clear_all_data(self) -> None:
-        """Clear all graph data."""
-        for graph in self.slot_graphs:
-            graph.clear_data()
-        self.multi_graph.clear_all_data()
+        for h in self.histories:
+            h.clear()
+        self._refresh_visible()
+
+    # --- CSV export -------------------------------------------------
+
+    def export_csv(self, path: str) -> int:
+        """Write all slot histories to one CSV file. Returns row count."""
+        rows = 0
+        with open(path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([c for c, _ in CSV_COLUMNS])
+            for slot, history in enumerate(self.histories):
+                arrays = history.get_arrays()
+                for i in range(len(history)):
+                    row = []
+                    for col, key in CSV_COLUMNS:
+                        if key == 'slot':
+                            row.append(slot + 1)
+                        elif key == 'timestamp':
+                            row.append(datetime.fromtimestamp(arrays['wall'][i])
+                                       .isoformat(timespec='seconds'))
+                        else:
+                            v = arrays[key][i]
+                            if np.isnan(v):
+                                row.append('')
+                            elif key in ('time', 'work_time', 'status', 'capacity', 'resistance'):
+                                row.append(int(v))
+                            else:
+                                row.append(f"{v:.4f}")
+                    writer.writerow(row)
+                    rows += 1
+        return rows
+
+    def export_csv_dialog(self) -> None:
+        if not any(len(h) for h in self.histories):
+            QMessageBox.information(self, "Export CSV", "No data recorded yet.")
+            return
+        default = f"mc3000_{datetime.now():%Y-%m-%d_%H%M}.csv"
+        path, _ = QFileDialog.getSaveFileName(self, "Export CSV", default, "CSV files (*.csv)")
+        if not path:
+            return
+        try:
+            rows = self.export_csv(path)
+        except OSError as e:
+            QMessageBox.critical(self, "Export CSV", f"Could not write file:\n{e}")
+            return
+        QMessageBox.information(self, "Export CSV", f"{rows} rows written to\n{path}")

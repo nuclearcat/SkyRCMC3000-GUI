@@ -38,6 +38,55 @@ def get_profiles_file() -> Path:
 
 # Built-in presets for common battery types
 BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
+    # "Idle" programs: the USB start command has no slot parameter, so every
+    # idle slot with a cell starts. These programs keep a slot from charging:
+    # the target voltage is below any healthy cell, so no current flows and
+    # the slot ends with "Time Cut" after one minute.
+    # LiIon variant tested on the device (cells 3.29-4.19 V: 0 mA, 0 mAh).
+    "Idle - LiIon (no charge)": {
+        "battery_type": 0,  # LiIon
+        "operation_mode": 0,  # Charge
+        "capacity_mah": 100,
+        "charge_current_ma": 100,
+        "discharge_current_ma": 500,
+        "charge_end_voltage_mv": 2500,
+        "discharge_cut_voltage_mv": 3000,
+        "charge_end_current_ma": 100,
+        "discharge_reduce_current_ma": 500,
+        "num_cycles": 1,
+        "cycle_mode": 0,
+        "charge_resting_min": 1,
+        "discharge_resting_min": 1,
+        "trickle_current_ma": 1,
+        "trickle_time": 0,
+        "restart_voltage_mv": 2300,  # = OFF
+        "cut_temperature_c": 45,
+        "cut_time_min": 1,
+    },
+    # NiMH variant (tested): the charger does not check the target before
+    # starting, it charges ~20 s at 100 mA and stops with "Time Cut" after
+    # one minute - below 1 mAh.
+    "Idle - NiMH (max 1 min, <2 mAh)": {
+        "battery_type": 3,  # NiMH
+        "operation_mode": 0,  # Charge
+        "capacity_mah": 100,
+        "charge_current_ma": 100,
+        "discharge_current_ma": 100,
+        "charge_end_voltage_mv": 900,
+        "discharge_cut_voltage_mv": 900,
+        "charge_end_current_ma": 100,
+        "discharge_reduce_current_ma": 100,
+        "num_cycles": 1,
+        "cycle_mode": 0,
+        "charge_resting_min": 1,
+        "discharge_resting_min": 1,
+        "peak_sense_mv": 3,
+        "trickle_current_ma": 1,
+        "trickle_time": 0,
+        "restart_voltage_mv": 1300,
+        "cut_temperature_c": 45,
+        "cut_time_min": 1,
+    },
     # NiMH AA batteries
     "NiMH AA 2000mAh (Standard)": {
         "battery_type": 3,  # NiMH
@@ -194,6 +243,8 @@ BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
         "cut_time_min": 150,
     },
     # Refresh/Break-in profiles
+    # Refresh is a fixed charge > discharge > charge sequence; the cycle
+    # settings below are not used by the charger in this mode.
     "NiMH Refresh (C>D>C)": {
         "battery_type": 3,
         "operation_mode": 1,  # Refresh
@@ -225,22 +276,58 @@ BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
         "cut_time_min": 600,
     },
     # Capacity test
-    "Capacity Test (D>C)": {
+    # Capacity tests must use Cycle mode: Refresh always runs C>D>C and
+    # ignores cycle_mode. One D>C cycle: discharge measures the capacity,
+    # the following charge leaves the cell full.
+    "NiMH AA 2000mAh Capacity Test (D>C)": {
         "battery_type": 3,
-        "operation_mode": 1,  # Refresh
+        "operation_mode": 4,  # Cycle
         "capacity_mah": 2000,
         "charge_current_ma": 1000,
-        "discharge_current_ma": 500,
+        "discharge_current_ma": 500,  # 0.25C - ~4 h
         "charge_end_voltage_mv": 1450,
         "discharge_cut_voltage_mv": 900,
         "charge_end_current_ma": 100,
         "num_cycles": 1,
         "cycle_mode": 2,  # D>C
         "charge_resting_min": 5,
+        "discharge_resting_min": 5,
+        "peak_sense_mv": 5,
+        "trickle_current_ma": 50,
+        "trickle_time": 0,  # OFF
         "cut_temperature_c": 45,
         "cut_time_min": 300,
     },
+    # 21700 cells around 4000-5000 mAh (e.g. Molicel P42A/P45B).
+    # Capacity limit set above the rated capacity so it never ends a phase.
+    "Li-Ion 21700 Capacity Test (D>C, 1A)": {
+        "battery_type": 0,
+        "operation_mode": 4,  # Cycle
+        "capacity_mah": 5000,
+        "charge_current_ma": 2000,
+        "discharge_current_ma": 1000,  # ~4-4.5 h
+        "charge_end_voltage_mv": 4200,
+        "discharge_cut_voltage_mv": 2800,
+        "charge_end_current_ma": 100,
+        "discharge_reduce_current_ma": 500,
+        "num_cycles": 1,
+        "cycle_mode": 2,  # D>C
+        "charge_resting_min": 10,
+        "discharge_resting_min": 10,  # let the cell cool before charging
+        "trickle_current_ma": 1,
+        "trickle_time": 0,
+        "restart_voltage_mv": 2300,  # = OFF
+        "cut_temperature_c": 45,
+        "cut_time_min": 360,
+    },
 }
+
+
+def ordered_preset_names() -> List[str]:
+    """Built-in preset names for the quick-profile list: idle programs first."""
+    idle = [n for n in BUILTIN_PRESETS if n.startswith("Idle")]
+    rest = sorted(n for n in BUILTIN_PRESETS if not n.startswith("Idle"))
+    return idle + rest
 
 
 class ProfileManager:
