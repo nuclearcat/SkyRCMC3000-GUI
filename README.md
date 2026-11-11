@@ -5,6 +5,25 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+> **Fork note:** this is the `improvements` branch of
+> [sstuetzel/SkyRCMC3000-GUI](https://github.com/sstuetzel/SkyRCMC3000-GUI),
+> a fork of [nuclearcat/SkyRCMC3000-GUI](https://github.com/nuclearcat/SkyRCMC3000-GUI).
+> It addresses upstream issues #1, #3, #4, #6 and #7 (see the change list
+> below). Install it with:
+>
+> ```bash
+> pipx install --force "git+https://github.com/sstuetzel/SkyRCMC3000-GUI.git@improvements"
+> ```
+>
+> On macOS with Homebrew's hidapi, start it with
+> `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib mc3000-gui`.
+
+## Changes in 1.8.13
+
+- Documentation: fork note with install command, updated known limitations,
+  new [docs/USB_REALTIME.md](docs/USB_REALTIME.md) (verified 0x55 layout and
+  charger behaviour).
+
 ## Changes in 1.8.12
 
 - Capacity test presets: "NiMH AA 2000mAh Capacity Test (D>C)" (all values
@@ -248,7 +267,15 @@ pytest
 
 ## Known Limitations
 
-- **Starting after "Finished"**: When a slot completes charging, you may need to press a button on the charger to clear the finished state before starting a new operation via USB.
+- **No per-slot start**: the USB start command starts every idle slot with a
+  cell. Use the built-in "Idle" profiles for slots that should stay idle.
+  Finished slots are reset automatically by "Start" (stop, then start).
+- **SkyRC app live view blocks USB**: while the app shows live data via
+  Bluetooth, the charger does not answer USB. The GUI shows a hint and keeps
+  the last values.
+- **Disch. End Current** always reads 500 mA - the byte layout of this
+  setting is not confirmed yet; set it in the app if it matters.
+- See [USB realtime data](docs/USB_REALTIME.md) for the verified 0x55 layout.
 - See [Protocol Notes](docs/protocol_notes.md) for more details.
 
 ## Firmware Updates (Linux)
