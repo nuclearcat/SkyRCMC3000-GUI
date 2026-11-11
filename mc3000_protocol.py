@@ -198,6 +198,12 @@ class SlotData:
     internal_temp_c: float    # Internal/charger temperature
     is_error: bool
     error_code: Optional[int]
+    # Extra values from the USB 0x55 response (verified against the SkyRC app).
+    # None means "not provided by this transport".
+    internal_resistance_mohm: Optional[int] = None
+    energy_mwh: Optional[int] = None
+    power_mw: Optional[int] = None
+    average_voltage_mv: Optional[int] = None
 
     @property
     def voltage_v(self) -> float:
@@ -211,8 +217,25 @@ class SlotData:
 
     @property
     def power_w(self) -> float:
-        """Calculated power in Watts (voltage × current)."""
+        """Power in Watts. Uses the value reported by the charger if available,
+        otherwise voltage × current."""
+        if self.power_mw is not None:
+            return self.power_mw / 1000.0
         return self.voltage_v * self.current_a
+
+    @property
+    def energy_wh(self) -> Optional[float]:
+        """Accumulated energy of the current/last run in Wh, if available."""
+        if self.energy_mwh is None:
+            return None
+        return self.energy_mwh / 1000.0
+
+    @property
+    def average_voltage_v(self) -> Optional[float]:
+        """Average voltage of the current/last run in V, if available."""
+        if self.average_voltage_mv is None:
+            return None
+        return self.average_voltage_mv / 1000.0
 
     @property
     def work_time_formatted(self) -> str:
@@ -254,12 +277,21 @@ def parse_slot_data(data: bytes, slot_number: int) -> Optional[SlotData]:
     - Bytes 10-11: Current (mA, big-endian)
     - Bytes 12-13: Capacity (mAh, big-endian)
     - Bytes 14-15: Battery temperature (0.1°C, big-endian, masked with 0x7FFF)
-    - Bytes 16-17: Unknown (RE_DETAILS says Int Temp, but hardware shows different)
+    - Bytes 16-17: Internal resistance (mOhm, big-endian). Verified: identical to
+                   "Batt IR" in the SkyRC app. Keeps the value of the last cell
+                   when the slot is empty (status 0).
     - Bytes 18-19: Internal/charger temperature (0.1°C, big-endian)
-    - Bytes 20-23: Reserved
-    - Byte 24: Capacity decimal (0.01 mAh units)
+    - Bytes 20-21: Energy of the current/last run (mWh, big-endian)
+    - Bytes 22-23: Power (mW, big-endian)
+    - Byte 24: Capacity decimal
+    - Bytes 25-26: Average voltage of the current/last run (mV, big-endian)
+    - Byte 27: Unknown (global value, changes over time)
     """
     if len(data) < 25:
+        return None
+    # Reject packets that are not a 0x55 status response (e.g. stale responses
+    # to other commands still waiting in the HID input queue).
+    if data[0] != 0x55:
         return None
 
     battery_type = data[2] & 0xFF
@@ -295,6 +327,12 @@ def parse_slot_data(data: bytes, slot_number: int) -> Optional[SlotData]:
     temperature_c = batt_temp_raw / 10.0
     internal_temp_c = internal_temp_raw / 10.0
 
+    # Extra values (see docstring)
+    internal_resistance_mohm = (data[16] << 8) | data[17]
+    energy_mwh = (data[20] << 8) | data[21]
+    power_mw = (data[22] << 8) | data[23]
+    average_voltage_mv = ((data[25] << 8) | data[26]) if len(data) > 26 else None
+
     # Get status name
     if is_error:
         error_desc = ERROR_CODES.get(status, None)
@@ -327,6 +365,10 @@ def parse_slot_data(data: bytes, slot_number: int) -> Optional[SlotData]:
         internal_temp_c=internal_temp_c,
         is_error=is_error,
         error_code=error_code,
+        internal_resistance_mohm=internal_resistance_mohm,
+        energy_mwh=energy_mwh,
+        power_mw=power_mw,
+        average_voltage_mv=average_voltage_mv,
     )
 
 
@@ -635,7 +677,7 @@ def parse_ble_slot_data(data: bytes, slot_number: int) -> Optional[SlotData]:
     temperature_c = float(data[15] & 0xFF)
 
     # Internal resistance in mOhm (bytes 16-17)
-    # internal_resistance = (data[16] << 8) | data[17]
+    internal_resistance = (data[16] << 8) | data[17]
 
     # Get status name
     if is_error:
@@ -669,6 +711,7 @@ def parse_ble_slot_data(data: bytes, slot_number: int) -> Optional[SlotData]:
         internal_temp_c=temperature_c,  # BLE doesn't provide separate internal temp
         is_error=is_error,
         error_code=error_code,
+        internal_resistance_mohm=internal_resistance,
     )
 
 

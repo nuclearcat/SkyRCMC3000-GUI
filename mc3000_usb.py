@@ -6,6 +6,7 @@ Uses hidapi library for cross-platform support.
 """
 
 import time
+import threading
 import platform
 import os
 from typing import Optional, List, Any, Tuple
@@ -148,6 +149,12 @@ class MC3000USB:
         self._device: Any = None
         self._connected: bool = False
         self._system_settings: Optional[SystemSettings] = None
+        # Serialises all USB transactions (poll worker thread vs. GUI thread)
+        self._lock = threading.RLock()
+        # Number of consecutive queries that got no matching response.
+        # A typical cause is the SkyRC app showing live data via Bluetooth,
+        # which makes the charger stop answering on USB.
+        self.consecutive_timeouts: int = 0
 
     @staticmethod
     def check_hid_available() -> bool:
@@ -243,6 +250,10 @@ class MC3000USB:
 
     def disconnect(self) -> None:
         """Disconnect from the MC3000 device."""
+        with self._lock:
+            self._disconnect_locked()
+
+    def _disconnect_locked(self) -> None:
         if self._device:
             try:
                 self._device.close()
@@ -302,6 +313,66 @@ class MC3000USB:
             logger.error(f"Error reading response: {e}")
             raise MC3000USBError(f"Read failed: {e}")
 
+    def _drain_input(self, max_reports: int = 16) -> int:
+        """Discard stale reports that are still queued in the HID buffer."""
+        drained = 0
+        for _ in range(max_reports):
+            try:
+                data = self._device.read(DATA_SIZE, timeout=1)
+            except Exception:
+                break
+            if not data:
+                break
+            drained += 1
+        return drained
+
+    def _transact(self, command: bytes, expect_code,
+                  expect_slot: Optional[int] = None,
+                  timeout_ms: int = 500, tries: int = 2) -> Optional[bytes]:
+        """
+        Send a command and wait for the matching response.
+
+        Reports that do not match (stale answers to earlier queries,
+        interleaved status packets) are skipped, so a late answer for
+        slot 2 can never be shown as slot 3.
+
+        Args:
+            command: 64-byte command
+            expect_code: expected first byte of the response (e.g. 0x55),
+                or a callable taking the response and returning True on match
+            expect_slot: expected slot number in byte 1, or None
+            timeout_ms: total time to wait per try
+            tries: number of send attempts
+
+        Returns:
+            Matching response or None
+        """
+        if not self.is_connected():
+            return None
+        with self._lock:
+            for _ in range(max(1, tries)):
+                self._drain_input()
+                self._send_command(command)
+                deadline = time.monotonic() + timeout_ms / 1000.0
+                while True:
+                    remaining = int((deadline - time.monotonic()) * 1000)
+                    if remaining <= 0:
+                        break
+                    response = self._read_response(timeout_ms=min(remaining, 200))
+                    if not response:
+                        continue
+                    if callable(expect_code):
+                        if not expect_code(response):
+                            continue
+                    elif response[0] != expect_code:
+                        continue
+                    if expect_slot is not None and (len(response) < 2 or response[1] != expect_slot):
+                        continue
+                    self.consecutive_timeouts = 0
+                    return response
+            self.consecutive_timeouts += 1
+            return None
+
     def get_system_settings(self) -> Optional[SystemSettings]:
         """
         Query system settings from the device.
@@ -313,11 +384,13 @@ class MC3000USB:
             return None
 
         try:
-            cmd = cmd_get_system_settings()
-            self._send_command(cmd)
-            time.sleep(0.01)  # Small delay as in reference implementation
-
-            response = self._read_response()
+            # The echo byte of the 0x5A answer is not verified on all
+            # firmware versions, so accept anything that is clearly not a
+            # realtime (0x55), slot settings (0x5F) or ACK (0xF0) report.
+            response = self._transact(cmd_get_system_settings(),
+                                      lambda r: r[0] not in (0x55, 0x5F, 0xF0)
+                                      and len(r) >= 33,
+                                      timeout_ms=600, tries=2)
             if response:
                 settings = parse_system_settings(response)
                 if settings:
@@ -346,11 +419,8 @@ class MC3000USB:
         try:
             # Use TakeMtuData command (0x55) for real-time measurements
             # (0x5F QuerySlotData returns slot settings/configuration instead)
-            cmd = cmd_take_mtu(slot)
-            self._send_command(cmd)
-            time.sleep(0.01)  # Small delay as in reference implementation
-
-            response = self._read_response()
+            response = self._transact(cmd_take_mtu(slot), 0x55,
+                                      expect_slot=slot, timeout_ms=500, tries=1)
             if response:
                 return parse_slot_data(response, slot)
         except Exception as e:
@@ -377,8 +447,8 @@ class MC3000USB:
             return False
 
         try:
-            cmd = cmd_start_processing()
-            return self._send_command(cmd)
+            with self._lock:
+                return self._send_command(cmd_start_processing())
         except Exception as e:
             logger.error(f"Error starting processing: {e}")
             return False
@@ -394,13 +464,13 @@ class MC3000USB:
             return False
 
         try:
-            cmd = cmd_stop_processing()
-            return self._send_command(cmd)
+            with self._lock:
+                return self._send_command(cmd_stop_processing())
         except Exception as e:
             logger.error(f"Error stopping processing: {e}")
             return False
 
-    def get_slot_settings(self, slot: int) -> Optional[SlotSettings]:
+    def get_slot_settings(self, slot: int, tries: int = 2) -> Optional[SlotSettings]:
         """
         Query slot settings/configuration for a specific slot.
 
@@ -418,11 +488,8 @@ class MC3000USB:
 
         try:
             # Use QuerySlotData command (0x5F) for settings
-            cmd = cmd_query_slot(slot)
-            self._send_command(cmd)
-            time.sleep(0.02)
-
-            response = self._read_response()
+            response = self._transact(cmd_query_slot(slot), 0x5F,
+                                      expect_slot=slot, timeout_ms=600, tries=tries)
             if response:
                 fw_version = self.firmware_version_int or 123
                 return parse_slot_settings(response, fw_version)
@@ -444,36 +511,42 @@ class MC3000USB:
             return False
 
         try:
-            self._send_command(config_data)
-            time.sleep(0.02)  # Wait for device to process
-
-            # Poll for config ACK, ignoring interleaved status packets (0x55)
-            deadline = time.time() + 0.5
-            while time.time() < deadline:
-                response = self._read_response(timeout_ms=100)
-                if not response:
-                    continue
-                code = response[0] & 0xFF
-                if code == 0x55:
-                    continue
-                if code == 0xF0:
-                    logger.info("Slot configuration applied successfully")
-                    return True
-                if code >= 0x80:
-                    logger.warning(
-                        "Slot config rejected, response: %d (%s)",
-                        code,
-                        get_error_description(code),
-                    )
-                    return False
-                logger.warning("Slot config rejected, response: %d", code)
-                return False
-
-            logger.warning("Slot config rejected, response: None (timeout)")
-            return False
+            with self._lock:
+                return self._set_slot_config_locked(config_data)
         except Exception as e:
             logger.error(f"Error setting slot config: {e}")
             return False
+
+    def _set_slot_config_locked(self, config_data: bytes) -> bool:
+        """Write slot config and wait for the ACK (lock must be held)."""
+        self._drain_input()
+        self._send_command(config_data)
+        time.sleep(0.02)  # Wait for device to process
+
+        # Poll for config ACK, ignoring interleaved status packets (0x55)
+        deadline = time.time() + 0.5
+        while time.time() < deadline:
+            response = self._read_response(timeout_ms=100)
+            if not response:
+                continue
+            code = response[0] & 0xFF
+            if code == 0x55:
+                continue
+            if code == 0xF0:
+                logger.info("Slot configuration applied successfully")
+                return True
+            if code >= 0x80:
+                logger.warning(
+                    "Slot config rejected, response: %d (%s)",
+                    code,
+                    get_error_description(code),
+                )
+                return False
+            logger.warning("Slot config rejected, response: %d", code)
+            return False
+
+        logger.warning("Slot config rejected, response: None (timeout)")
+        return False
 
     @property
     def firmware_version(self) -> Optional[str]:

@@ -5,6 +5,27 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+## Changes in 1.8.0
+
+- **Internal resistance, energy, average voltage**: parsed from the USB `0x55`
+  realtime packet (bytes 16-17 mΩ, 20-21 mWh, 22-23 mW, 25-26 mV; verified
+  against the SkyRC app) and shown per slot, in the graphs and in the CSV export.
+- **No more freezing**: USB polling runs in a background thread; every query
+  waits for the matching answer (command echo + slot), so stale reports can no
+  longer end up in the wrong slot.
+- **Bluetooth hint**: while the SkyRC app shows live data via Bluetooth the
+  charger stops answering USB. The GUI now keeps the last values (greyed out)
+  and says so in the status bar instead of hanging.
+- **Full-run graphs**: history covers up to 48 h per slot (peak downsampling
+  keeps it fast), restarts automatically when a new program starts, time axis
+  in h:mm:ss, shared between "All Slots" and the slot tabs.
+- **CSV export** of all slots ("Export CSV..." next to the graph tabs).
+- **Configure dialog**: marks slots that could not be read ("not read") and
+  warns before applying them; restart voltage values outside the manual range
+  are labelled "= OFF"; raw device values are no longer clamped by the spin
+  box ranges (which used to change them silently on "Apply").
+- Window title shows the installed package version.
+
 ## Features
 
 - Real-time monitoring of all 4 charging slots
