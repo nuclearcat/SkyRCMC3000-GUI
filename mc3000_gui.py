@@ -10,7 +10,7 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("skyrc-mc3000-gui")
 except Exception:  # running from a source checkout
-    __version__ = "1.8.8"
+    __version__ = "1.8.9"
 
 import sys
 import time

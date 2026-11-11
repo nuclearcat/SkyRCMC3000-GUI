@@ -58,3 +58,14 @@ def test_growth_and_cap():
     assert arr["capacity"][-1] == 5999
     assert arr["resistance"][-1] == 12
     assert abs(arr["energy"][-1] - 1.5) < 1e-9
+
+
+def test_error_recorded_once():
+    h = SlotDataHistory()
+    for _ in range(3):
+        h.add_data(make(1))
+    err = make(0x87)
+    err.is_error = True
+    for _ in range(5):
+        h.add_data(err)
+    assert len(h) == 4

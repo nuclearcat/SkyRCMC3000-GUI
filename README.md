@@ -5,6 +5,11 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+## Changes in 1.8.9
+
+- Graph/CSV history keeps only the first sample after a slot stopped with
+  an error (e.g. "Time Cut"), like it already did for "Finished".
+
 ## Changes in 1.8.8
 
 - Configure dialog greys out settings that the selected chemistry/mode does

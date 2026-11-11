@@ -143,7 +143,7 @@ class SlotDataHistory:
         Rules:
         - nothing is recorded in standby / empty slot
         - a new start (inactive -> active) begins a fresh history
-        - while finished, only the first finished sample is kept
+        - while finished or stopped by an error, only the first sample is kept
 
         Returns:
             True if a point was added (or the history was reset)
@@ -159,7 +159,8 @@ class SlotDataHistory:
 
         if status == 0:
             return False
-        if status == STATUS_FINISHED and prev == STATUS_FINISHED and self._n > 0:
+        # Finished or error (e.g. "Time Cut"): keep only the first sample
+        if not active and prev == status and self._n > 0:
             return False
         if not active and status != STATUS_FINISHED and not data.is_error:
             return False
