@@ -38,6 +38,53 @@ def get_profiles_file() -> Path:
 
 # Built-in presets for common battery types
 BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
+    # "Idle" programs: the USB start command has no slot parameter, so every
+    # idle slot with a cell starts. These programs keep a slot from charging:
+    # the target voltage is below any healthy cell, so no current flows and
+    # the slot ends with "Time Cut" after one minute.
+    # LiIon variant tested on the device (cells 3.29-4.19 V: 0 mA, 0 mAh).
+    "Idle - LiIon (no charge)": {
+        "battery_type": 0,  # LiIon
+        "operation_mode": 0,  # Charge
+        "capacity_mah": 100,
+        "charge_current_ma": 100,
+        "discharge_current_ma": 500,
+        "charge_end_voltage_mv": 2500,
+        "discharge_cut_voltage_mv": 3000,
+        "charge_end_current_ma": 100,
+        "discharge_reduce_current_ma": 500,
+        "num_cycles": 1,
+        "cycle_mode": 0,
+        "charge_resting_min": 1,
+        "discharge_resting_min": 1,
+        "trickle_current_ma": 1,
+        "trickle_time": 0,
+        "restart_voltage_mv": 2300,  # = OFF
+        "cut_temperature_c": 45,
+        "cut_time_min": 1,
+    },
+    # NiMH variant: NOT yet tested on the device.
+    "Idle - NiMH (no charge, untested)": {
+        "battery_type": 3,  # NiMH
+        "operation_mode": 0,  # Charge
+        "capacity_mah": 100,
+        "charge_current_ma": 100,
+        "discharge_current_ma": 100,
+        "charge_end_voltage_mv": 900,
+        "discharge_cut_voltage_mv": 900,
+        "charge_end_current_ma": 100,
+        "discharge_reduce_current_ma": 100,
+        "num_cycles": 1,
+        "cycle_mode": 0,
+        "charge_resting_min": 1,
+        "discharge_resting_min": 1,
+        "peak_sense_mv": 3,
+        "trickle_current_ma": 1,
+        "trickle_time": 0,
+        "restart_voltage_mv": 1300,
+        "cut_temperature_c": 45,
+        "cut_time_min": 1,
+    },
     # NiMH AA batteries
     "NiMH AA 2000mAh (Standard)": {
         "battery_type": 3,  # NiMH

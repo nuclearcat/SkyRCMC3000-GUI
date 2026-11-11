@@ -5,6 +5,12 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+## Changes in 1.8.3
+
+- New quick profiles "Idle - LiIon (no charge)" (tested) and
+  "Idle - NiMH (no charge, untested)" to keep a slot from charging when
+  "Start" starts all slots.
+
 ## Changes in 1.8.2
 
 - **Start preview**: "Start" lists what each slot will do (starts, will not
