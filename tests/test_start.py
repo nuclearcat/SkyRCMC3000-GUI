@@ -50,3 +50,11 @@ def test_idle_presets_listed_first():
     names = ordered_preset_names()
     assert names[0].startswith("Idle") and names[1].startswith("Idle")
     assert not names[2].startswith("Idle")
+
+
+def test_nimh_idle_is_not_blocked():
+    st = s(900)
+    st.battery_type = 3
+    plan = plan_start([d(4, 1222)], [st])
+    assert plan.slots[0].state == STARTS
+    assert "stops after 1 min" in plan.slots[0].text

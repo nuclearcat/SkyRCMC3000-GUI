@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skyrc-mc3000-gui"
-version = "1.8.6"
+version = "1.8.7"
 description = "Cross-platform GUI for SKYRC MC3000 battery charger"
 readme = "README.md"
 license = {file = "LICENSE"}

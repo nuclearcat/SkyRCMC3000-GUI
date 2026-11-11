@@ -17,6 +17,9 @@ from mc3000_protocol import SlotData, SlotSettings, BATTERY_TYPES
 ACTIVE = (1, 2, 3)          # charging, discharging, resting
 EMPTY_SLOT_MV = 500         # below this no cell is inserted
 MODE_CHARGE = 0
+# Li chemistries (LiIon, LiFe, LiHV) check the target voltage before charging.
+# Ni chemistries do not (tested with NiMH: charges until the cut-off time).
+LI_TYPES = (0, 1, 2)
 
 # Plan states
 RUNNING = "running"
@@ -76,7 +79,8 @@ def plan_start(data: List[Optional[SlotData]],
             btype = BATTERY_TYPES.get(st.battery_type, "?")
             mode = d.operation_mode_name
             prog = f"{btype} {mode}"
-            if (st.operation_mode == MODE_CHARGE and st.charge_end_voltage_mv > 0
+            if (st.operation_mode == MODE_CHARGE and st.battery_type in LI_TYPES
+                    and st.charge_end_voltage_mv > 0
                     and d.voltage_mv >= st.charge_end_voltage_mv):
                 plan.slots.append(SlotPlan(
                     slot, BLOCKED, needs_reset,
@@ -85,6 +89,8 @@ def plan_start(data: List[Optional[SlotData]],
                 continue
             if st.operation_mode == MODE_CHARGE:
                 prog += f" to {st.charge_end_voltage_mv / 1000:.2f} V, {st.charge_current_ma} mA"
+                if 0 < st.cut_time_min <= 5:
+                    prog += f", stops after {st.cut_time_min} min"
         else:
             prog = f"{d.battery_type_name} {d.operation_mode_name}"
         plan.slots.append(SlotPlan(slot, STARTS, needs_reset,

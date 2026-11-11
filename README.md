@@ -5,6 +5,12 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+## Changes in 1.8.7
+
+- Start preview: NiMH/NiCd slots are no longer reported as "will not be
+  charged" - Ni chemistries ignore the target voltage and charge until the
+  cut-off time. Short cut-off times are shown ("stops after 1 min").
+
 ## Changes in 1.8.6
 
 - Idle profiles are listed first in the quick-profile list.
