@@ -20,7 +20,7 @@ MODE_CHARGE = 0
 
 # Plan states
 RUNNING = "running"
-EMPTY = "empty"
+EMPTY = "empty"            # no voltage reading (may still hold a cell)
 NO_DATA = "no_data"
 STARTS = "starts"
 BLOCKED = "blocked"          # starts, but will not charge (cell above target)
@@ -48,7 +48,7 @@ class StartPlan:
 
     @property
     def starting(self) -> List[SlotPlan]:
-        return [s for s in self.slots if s.state in (STARTS, BLOCKED)]
+        return [s for s in self.slots if s.state in (STARTS, BLOCKED, EMPTY)]
 
 
 def plan_start(data: List[Optional[SlotData]],
@@ -64,7 +64,11 @@ def plan_start(data: List[Optional[SlotData]],
             plan.slots.append(SlotPlan(slot, RUNNING, text=f"running ({d.status_name})"))
             continue
         if d.voltage_mv < EMPTY_SLOT_MV:
-            plan.slots.append(SlotPlan(slot, EMPTY, text="empty - will not start"))
+            # The charger does not measure every cell in standby (seen with
+            # NiMH: 0.000 V reported although a cell was inserted).
+            plan.slots.append(SlotPlan(
+                slot, EMPTY,
+                text="no voltage reading - starts if a cell is inserted"))
             continue
 
         needs_reset = d.status != 0

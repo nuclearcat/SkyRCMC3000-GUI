@@ -5,10 +5,17 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+## Changes in 1.8.5
+
+- NiMH idle profile tested: the charger charges ~20 s at 100 mA, then
+  "Time Cut" (< 1 mAh) - renamed to "Idle - NiMH (max 1 min, <2 mAh)".
+- Start preview no longer calls a slot "empty" when the charger reports
+  0.000 V - it does not measure every cell in standby.
+
 ## Changes in 1.8.3
 
 - New quick profiles "Idle - LiIon (no charge)" (tested) and
-  "Idle - NiMH (no charge, untested)" to keep a slot from charging when
+  "Idle - NiMH (max 1 min, <2 mAh)" to keep a slot from charging when
   "Start" starts all slots.
 
 ## Changes in 1.8.2

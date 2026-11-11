@@ -36,7 +36,7 @@ def test_plan_states():
     plan = plan_start(data, settings)
     assert [p.state for p in plan.slots] == [STARTS, BLOCKED, EMPTY, RUNNING]
     assert plan.needs_reset and plan.any_running
-    assert len(plan.starting) == 2
+    assert len(plan.starting) == 3
 
 
 def test_standby_no_reset():

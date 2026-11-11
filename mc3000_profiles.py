@@ -63,8 +63,10 @@ BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
         "cut_temperature_c": 45,
         "cut_time_min": 1,
     },
-    # NiMH variant: NOT yet tested on the device.
-    "Idle - NiMH (no charge, untested)": {
+    # NiMH variant (tested): the charger does not check the target before
+    # starting, it charges ~20 s at 100 mA and stops with "Time Cut" after
+    # one minute - below 1 mAh.
+    "Idle - NiMH (max 1 min, <2 mAh)": {
         "battery_type": 3,  # NiMH
         "operation_mode": 0,  # Charge
         "capacity_mah": 100,
