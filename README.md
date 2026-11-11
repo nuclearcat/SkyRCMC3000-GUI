@@ -5,118 +5,29 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
-> **Fork note:** this is the `improvements` branch of
-> [sstuetzel/SkyRCMC3000-GUI](https://github.com/sstuetzel/SkyRCMC3000-GUI),
-> a fork of [nuclearcat/SkyRCMC3000-GUI](https://github.com/nuclearcat/SkyRCMC3000-GUI).
-> It addresses upstream issues #1, #3, #4, #6 and #7 (see the change list
-> below). Install it with:
->
-> ```bash
-> pipx install --force "git+https://github.com/sstuetzel/SkyRCMC3000-GUI.git@improvements"
-> ```
->
-> On macOS with Homebrew's hidapi, start it with
-> `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib mc3000-gui`.
+## What's new in 1.9
 
-## Changes in 1.9.1
-
-- Theme fixes: "Light" now stays light when the system is dark (explicit
-  light palette), and the forced theme is passed to the OS so the window
-  title bar matches (Qt >= 6.8).
-
-## Changes in 1.9.0
-
-- **Dark mode**: "Theme" selector in the main window - Auto (follows the
-  operating system, switches live), Light, Dark. Graphs switch too. The
-  choice is remembered.
-
-## Changes in 1.8.13
-
-- Documentation: fork note with install command, updated known limitations,
-  new [docs/USB_REALTIME.md](docs/USB_REALTIME.md) (verified 0x55 layout and
-  charger behaviour).
-
-## Changes in 1.8.12
-
-- Capacity test presets: "NiMH AA 2000mAh Capacity Test (D>C)" (all values
-  set explicitly) and new "Li-Ion 21700 Capacity Test (D>C, 1A)" for
-  4000-5000 mAh cells (discharge 1 A to 2.8 V, charge 2 A to 4.2 V / 0.1 A,
-  10 min rest, capacity limit 5000 mAh, cut-off time 360 min).
-
-## Changes in 1.8.10
-
-- Preset "NiMH Capacity Test (D>C)" (renamed from "Capacity Test (D>C)") now uses Cycle mode (1 cycle, D>C). It used
-  Refresh mode, which always runs charge > discharge > charge and ignores
-  the cycle mode setting.
-
-## Changes in 1.8.9
-
-- Graph/CSV history keeps only the first sample after a slot stopped with
-  an error (e.g. "Time Cut"), like it already did for "Finished".
-
-## Changes in 1.8.8
-
-- Configure dialog greys out settings that the selected chemistry/mode does
-  not use (e.g. discharge values in Charge mode, -dV/trickle for Li cells,
-  cycle settings outside Cycle mode). Values are still sent unchanged.
-
-## Changes in 1.8.7
-
-- Start preview: NiMH/NiCd slots are no longer reported as "will not be
-  charged" - Ni chemistries ignore the target voltage and charge until the
-  cut-off time. Short cut-off times are shown ("stops after 1 min").
-
-## Changes in 1.8.6
-
-- Idle profiles are listed first in the quick-profile list.
-
-## Changes in 1.8.5
-
-- NiMH idle profile tested: the charger charges ~20 s at 100 mA, then
-  "Time Cut" (< 1 mAh) - renamed to "Idle - NiMH (max 1 min, <2 mAh)".
-- Start preview no longer calls a slot "empty" when the charger reports
-  0.000 V - it does not measure every cell in standby.
-
-## Changes in 1.8.3
-
-- New quick profiles "Idle - LiIon (no charge)" (tested) and
-  "Idle - NiMH (max 1 min, <2 mAh)" to keep a slot from charging when
-  "Start" starts all slots.
-
-## Changes in 1.8.2
-
-- **Start preview**: "Start" lists what each slot will do (starts, will not
-  charge because the cell is above the target, empty, already running).
-- **Finished slots are reset automatically** (stop, then start) - previously
-  "Start" only beeped when slots were "Finished" or stopped with an error.
-- Tip: the charger has no per-slot start. A do-nothing program (LiIon Charge,
-  target 2.50 V, 100 mA, cut-off time 1 min) keeps a slot idle.
-- Value axis no longer shows "(x0.001)".
-
-## Changes in 1.8.1
-
-- Resistance 0xFFFF (no measurement) is shown as "---"; time axis fix.
-
-## Changes in 1.8.0
-
-- **Internal resistance, energy, average voltage**: parsed from the USB `0x55`
-  realtime packet (bytes 16-17 mΩ, 20-21 mWh, 22-23 mW, 25-26 mV; verified
-  against the SkyRC app) and shown per slot, in the graphs and in the CSV export.
-- **No more freezing**: USB polling runs in a background thread; every query
-  waits for the matching answer (command echo + slot), so stale reports can no
-  longer end up in the wrong slot.
-- **Bluetooth hint**: while the SkyRC app shows live data via Bluetooth the
-  charger stops answering USB. The GUI now keeps the last values (greyed out)
-  and says so in the status bar instead of hanging.
-- **Full-run graphs**: history covers up to 48 h per slot (peak downsampling
-  keeps it fast), restarts automatically when a new program starts, time axis
-  in h:mm:ss, shared between "All Slots" and the slot tabs.
-- **CSV export** of all slots ("Export CSV..." next to the graph tabs).
-- **Configure dialog**: marks slots that could not be read ("not read") and
-  warns before applying them; restart voltage values outside the manual range
-  are labelled "= OFF"; raw device values are no longer clamped by the spin
-  box ranges (which used to change them silently on "Apply").
-- Window title shows the installed package version.
+- **Internal resistance, energy, average voltage** per slot (USB `0x55`
+  bytes 16-17 / 20-21 / 25-26, verified against the SkyRC app), also in the
+  graphs and the CSV export.
+- **No more freezing**: USB polling runs in a background thread, all USB
+  access is serialised, and every answer is checked (command echo + slot).
+- **SkyRC app hint**: while the app shows live data via Bluetooth the
+  charger stops answering USB - the GUI keeps the last values greyed out
+  and says so instead of hanging.
+- **Full-run graphs** (up to 48 h, peak downsampling, h:mm:ss axis, restart
+  on a new program) and **CSV export** of all slots.
+- **Start preview**: "Start" shows what each slot will do and resets
+  finished slots automatically (stop, then start).
+- **Configure dialog**: unread slots are flagged, restart voltage "OFF" is
+  shown, device values are no longer clamped by the spin box ranges,
+  settings not used by the selected chemistry/mode are greyed out.
+- **Profiles**: "Idle" programs (keep a slot from charging), NiMH AA and
+  Li-Ion 21700 capacity tests (Cycle D>C); the old "Capacity Test (D>C)"
+  used Refresh mode, which ignores the cycle mode.
+- **Theme selector**: Auto (follows the OS), Light, Dark.
+- Window title shows the installed version; tests in `tests/`;
+  protocol notes in [docs/USB_REALTIME.md](docs/USB_REALTIME.md).
 
 ## Features
 
