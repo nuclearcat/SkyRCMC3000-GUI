@@ -83,6 +83,51 @@ def dark_palette() -> QPalette:
     return p
 
 
+def light_palette() -> QPalette:
+    """Explicit light palette (Fusion's standard palette follows the system
+    colour scheme on macOS, so it cannot be used to force light mode)."""
+    p = QPalette()
+    window = QColor(239, 239, 239)
+    text = QColor(0, 0, 0)
+    disabled = QColor(150, 150, 150)
+    highlight = QColor(48, 140, 198)
+
+    p.setColor(QPalette.Window, window)
+    p.setColor(QPalette.WindowText, text)
+    p.setColor(QPalette.Base, QColor(255, 255, 255))
+    p.setColor(QPalette.AlternateBase, QColor(247, 247, 247))
+    p.setColor(QPalette.ToolTipBase, QColor(255, 255, 220))
+    p.setColor(QPalette.ToolTipText, text)
+    p.setColor(QPalette.Text, text)
+    p.setColor(QPalette.Button, window)
+    p.setColor(QPalette.ButtonText, text)
+    p.setColor(QPalette.BrightText, Qt.red)
+    p.setColor(QPalette.Link, highlight)
+    p.setColor(QPalette.Highlight, highlight)
+    p.setColor(QPalette.HighlightedText, Qt.white)
+    p.setColor(QPalette.PlaceholderText, disabled)
+    p.setColor(QPalette.Light, QColor(255, 255, 255))
+    p.setColor(QPalette.Midlight, QColor(227, 227, 227))
+    p.setColor(QPalette.Mid, QColor(160, 160, 160))
+    p.setColor(QPalette.Dark, QColor(160, 160, 160))
+    p.setColor(QPalette.Shadow, QColor(105, 105, 105))
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        p.setColor(QPalette.Disabled, role, disabled)
+    p.setColor(QPalette.Disabled, QPalette.Base, window)
+    return p
+
+
+def _request_color_scheme(mode: str) -> None:
+    """Tell Qt (and the OS window frame, e.g. the macOS title bar) which
+    colour scheme to use. Needs Qt >= 6.8; silently ignored otherwise."""
+    try:
+        scheme = {"dark": Qt.ColorScheme.Dark,
+                  "light": Qt.ColorScheme.Light}.get(mode, Qt.ColorScheme.Unknown)
+        QGuiApplication.styleHints().setColorScheme(scheme)
+    except AttributeError:
+        pass
+
+
 class ThemeManager:
     """Applies the theme to the application and notifies listeners."""
 
@@ -90,6 +135,7 @@ class ThemeManager:
         self.app = app
         self.mode = load_theme_mode()
         self.dark = False
+        self._applying = False
         self._listeners: List[Callable[[bool], None]] = []
         try:
             QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_system_changed)
@@ -108,23 +154,28 @@ class ThemeManager:
         self.apply()
 
     def apply(self) -> None:
-        self.dark = is_dark(self.mode)
-        if self.dark:
-            self.app.setPalette(dark_palette())
-        else:
-            self.app.setPalette(self.app.style().standardPalette())
-        # Widgets with a style sheet do not pick up palette changes by themselves
-        for w in self.app.allWidgets():
-            if w.styleSheet():
-                w.style().unpolish(w)
-                w.style().polish(w)
+        if self._applying:
+            return
+        self._applying = True
         try:
-            import pyqtgraph as pg
-            pg.setConfigOptions(**PLOT_COLORS[self.dark])
-        except ImportError:
-            pass
-        for cb in list(self._listeners):
-            cb(self.dark)
+            # Auto resets to the system scheme, so is_dark() sees the OS value
+            _request_color_scheme(self.mode)
+            self.dark = is_dark(self.mode)
+            self.app.setPalette(dark_palette() if self.dark else light_palette())
+            # Widgets with a style sheet do not pick up palette changes by themselves
+            for w in self.app.allWidgets():
+                if w.styleSheet():
+                    w.style().unpolish(w)
+                    w.style().polish(w)
+            try:
+                import pyqtgraph as pg
+                pg.setConfigOptions(**PLOT_COLORS[self.dark])
+            except ImportError:
+                pass
+            for cb in list(self._listeners):
+                cb(self.dark)
+        finally:
+            self._applying = False
 
     def _on_system_changed(self, *_):
         if self.mode == "auto":
