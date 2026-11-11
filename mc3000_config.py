@@ -225,6 +225,7 @@ class SlotConfigWidget(QWidget):
         self.config = SlotConfig(slot_number=slot_number)
         self._setup_ui()
         self._connect_signals()
+        self._update_field_relevance()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -326,6 +327,7 @@ class SlotConfigWidget(QWidget):
         self.restart_state_label = QLabel("")
         self.restart_state_label.setStyleSheet("color: gray;")
         restart_row = QHBoxLayout()
+        self._restart_row = restart_row
         restart_row.addWidget(self.restart_voltage_spin, 1)
         restart_row.addWidget(self.restart_state_label)
         voltage_layout.addRow("Restart:", restart_row)
@@ -422,10 +424,15 @@ class SlotConfigWidget(QWidget):
         # Initialize voltage limits and peak sense visibility based on default battery type
         self._update_voltage_limits()
 
+        hint = QLabel("Greyed-out settings are not used by the selected chemistry/mode.")
+        hint.setStyleSheet("color: gray;")
+        layout.addWidget(hint)
+
         layout.addStretch()
 
     def _connect_signals(self):
         self.battery_type_combo.currentIndexChanged.connect(self._on_battery_type_changed)
+        self.mode_combo.currentIndexChanged.connect(self._update_field_relevance)
         self.battery_type_combo.currentIndexChanged.connect(self.configChanged)
         self.mode_combo.currentIndexChanged.connect(self.configChanged)
         self.capacity_spin.valueChanged.connect(self.configChanged)
@@ -478,6 +485,58 @@ class SlotConfigWidget(QWidget):
             self.peak_sense_spin.setToolTip("-dV detection (only for NiMH/NiCd/Eneloop)")
         else:
             self.peak_sense_spin.setToolTip("-dV detection for NiMH/NiCd batteries")
+        self._update_field_relevance()
+
+    # Which settings the charger uses depends on chemistry and mode. Fields
+    # that do not apply are greyed out (their values are still sent).
+    def _update_field_relevance(self, *_):
+        if not hasattr(self, "_restart_row"):
+            return  # UI not built yet
+        battery_type = self.battery_type_combo.currentData()
+        if battery_type is None:
+            battery_type = 0
+        mode = self.mode_combo.currentText()
+        is_ni = battery_type in (3, 4, 6)       # NiMH, NiCd, Eneloop
+
+        charges = mode in ("Charge", "Refresh", "Storage", "Break-in", "Cycle")
+        discharges = mode in ("Discharge", "Refresh", "Storage", "Break-in", "Cycle")
+        cycle = mode == "Cycle"
+        rests = mode in ("Refresh", "Break-in", "Cycle")
+
+        relevance = [
+            (self.charge_current_spin, charges),
+            (self.discharge_current_spin, discharges),
+            # Ni cells end by -dV, not by a CC/CV end current
+            (self.end_current_spin, charges and not is_ni),
+            (self.end_voltage_spin, charges),
+            (self.cut_voltage_spin, discharges),
+            (self._restart_row, charges and mode != "Storage"),
+            (self.cycle_count_spin, cycle),
+            (self.cycle_mode_combo, cycle),
+            (self.charge_rest_time_spin, rests),
+            (self.discharge_rest_time_spin, rests),
+            (self.discharge_end_current_spin, discharges),
+            (self.peak_sense_spin, charges and is_ni),
+            (self.trickle_current_spin, charges and is_ni),
+            (self.trickle_time_combo, charges and is_ni),
+        ]
+        for item, enabled in relevance:
+            self._set_row_enabled(item, enabled)
+
+    def _set_row_enabled(self, item, enabled: bool):
+        """Enable/disable a form row: field and its label."""
+        if isinstance(item, QHBoxLayout):
+            for i in range(item.count()):
+                w = item.itemAt(i).widget()
+                if w is not None:
+                    w.setEnabled(enabled)
+        else:
+            item.setEnabled(enabled)
+        for form in self.findChildren(QFormLayout):
+            label = form.labelForField(item)
+            if label is not None:
+                label.setEnabled(enabled)
+                break
 
     def _update_restart_label(self, *_):
         battery_type = self.battery_type_combo.currentData()

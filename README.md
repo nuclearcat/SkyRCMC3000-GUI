@@ -5,6 +5,12 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+## Changes in 1.8.8
+
+- Configure dialog greys out settings that the selected chemistry/mode does
+  not use (e.g. discharge values in Charge mode, -dV/trickle for Li cells,
+  cycle settings outside Cycle mode). Values are still sent unchanged.
+
 ## Changes in 1.8.7
 
 - Start preview: NiMH/NiCd slots are no longer reported as "will not be
