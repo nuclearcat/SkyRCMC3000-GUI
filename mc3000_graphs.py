@@ -85,6 +85,11 @@ CSV_COLUMNS = [
 class TimeAxisItem(pg.AxisItem):
     """X axis showing elapsed seconds as H:MM:SS."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Values are always seconds - no "(x0.001)" / "ks" scaling
+        self.enableAutoSIPrefix(False)
+
     def tickStrings(self, values, scale, spacing):
         out = []
         for v in values:

@@ -56,3 +56,11 @@ def test_rejects_non_status_packet():
     other = bytearray(FINISHED)
     other[0] = 0x5F
     assert parse_slot_data(bytes(other), 1) is None
+
+
+def test_resistance_ffff_is_invalid():
+    data = bytearray(FINISHED)
+    data[16] = 0xFF
+    data[17] = 0xFF
+    d = parse_slot_data(bytes(data), 1)
+    assert d.internal_resistance_mohm is None

@@ -329,6 +329,8 @@ def parse_slot_data(data: bytes, slot_number: int) -> Optional[SlotData]:
 
     # Extra values (see docstring)
     internal_resistance_mohm = (data[16] << 8) | data[17]
+    if internal_resistance_mohm == 0xFFFF:  # no valid measurement (e.g. finished)
+        internal_resistance_mohm = None
     energy_mwh = (data[20] << 8) | data[21]
     power_mw = (data[22] << 8) | data[23]
     average_voltage_mv = ((data[25] << 8) | data[26]) if len(data) > 26 else None
@@ -678,6 +680,8 @@ def parse_ble_slot_data(data: bytes, slot_number: int) -> Optional[SlotData]:
 
     # Internal resistance in mOhm (bytes 16-17)
     internal_resistance = (data[16] << 8) | data[17]
+    if internal_resistance == 0xFFFF:
+        internal_resistance = None
 
     # Get status name
     if is_error:
