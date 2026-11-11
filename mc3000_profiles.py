@@ -277,7 +277,7 @@ BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
     },
     # Capacity test
     # Must be Cycle mode: Refresh always runs C>D>C and ignores cycle_mode.
-    "Capacity Test (D>C)": {
+    "NiMH Capacity Test (D>C)": {
         "battery_type": 3,
         "operation_mode": 4,  # Cycle
         "capacity_mah": 2000,

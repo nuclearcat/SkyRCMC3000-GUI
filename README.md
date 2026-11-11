@@ -7,7 +7,7 @@ Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 batter
 
 ## Changes in 1.8.10
 
-- Preset "Capacity Test (D>C)" now uses Cycle mode (1 cycle, D>C). It used
+- Preset "NiMH Capacity Test (D>C)" (renamed from "Capacity Test (D>C)") now uses Cycle mode (1 cycle, D>C). It used
   Refresh mode, which always runs charge > discharge > charge and ignores
   the cycle mode setting.
 

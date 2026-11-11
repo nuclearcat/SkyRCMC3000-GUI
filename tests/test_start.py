@@ -62,5 +62,5 @@ def test_nimh_idle_is_not_blocked():
 
 def test_capacity_test_preset_uses_cycle_mode():
     from mc3000_profiles import BUILTIN_PRESETS
-    p = BUILTIN_PRESETS["Capacity Test (D>C)"]
+    p = BUILTIN_PRESETS["NiMH Capacity Test (D>C)"]
     assert p["operation_mode"] == 4 and p["cycle_mode"] == 2 and p["num_cycles"] == 1
