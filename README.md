@@ -5,6 +5,20 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+## Changes in 1.8.2
+
+- **Start preview**: "Start" lists what each slot will do (starts, will not
+  charge because the cell is above the target, empty, already running).
+- **Finished slots are reset automatically** (stop, then start) - previously
+  "Start" only beeped when slots were "Finished" or stopped with an error.
+- Tip: the charger has no per-slot start. A do-nothing program (LiIon Charge,
+  target 2.50 V, 100 mA, cut-off time 1 min) keeps a slot idle.
+- Value axis no longer shows "(x0.001)".
+
+## Changes in 1.8.1
+
+- Resistance 0xFFFF (no measurement) is shown as "---"; time axis fix.
+
 ## Changes in 1.8.0
 
 - **Internal resistance, energy, average voltage**: parsed from the USB `0x55`

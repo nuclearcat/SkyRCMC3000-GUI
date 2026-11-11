@@ -217,6 +217,8 @@ def _new_plot_widget() -> pg.PlotWidget:
     pw = pg.PlotWidget(axisItems={'bottom': TimeAxisItem(orientation='bottom')})
     pw.showGrid(x=True, y=True, alpha=0.3)
     pw.setLabel('bottom', 'Time (h:mm:ss)')
+    # Units are in the axis label already - no "(x0.001)" scaling
+    pw.getAxis('left').enableAutoSIPrefix(False)
     pw.addLegend(offset=(10, 10))
     return pw
 

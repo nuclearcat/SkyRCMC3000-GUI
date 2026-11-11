@@ -10,7 +10,7 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("skyrc-mc3000-gui")
 except Exception:  # running from a source checkout
-    __version__ = "1.8.1"
+    __version__ = "1.8.2"
 
 import sys
 import time
@@ -46,6 +46,7 @@ from PySide6.QtGui import QFont, QPalette, QColor
 
 from mc3000_usb import MC3000USB, MC3000USBError, MC3000PermissionError
 from mc3000_protocol import SlotData, STATUS_CODES
+from mc3000_start import plan_start, ACTIVE, EMPTY_SLOT_MV
 
 # Try to import BLE module (optional dependency)
 try:
@@ -822,7 +823,7 @@ class MainWindow(QMainWindow):
                 )
 
     def _on_start_clicked(self):
-        """Start charger processing for all configured slots."""
+        """Show what a start would do, then start (resetting finished slots if needed)."""
         if not self._is_connected():
             QMessageBox.warning(self, "Not Connected", "Please connect to the charger first.")
             return
@@ -836,19 +837,70 @@ class MainWindow(QMainWindow):
             )
             return
 
-        reply = QMessageBox.question(
-            self,
-            "Start Charger",
-            "Start charging now?\n\n"
-            "This starts all slots that are configured and in standby.\n"
-            "Make sure you have applied the desired slot configuration first.",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
+        data = list(self._usb_slot_cache)
+        settings = [None] * 4
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            for i, d in enumerate(data):
+                if d is not None and d.status not in ACTIVE and d.voltage_mv >= EMPTY_SLOT_MV:
+                    try:
+                        settings[i] = self.mc3000.get_slot_settings(i, tries=1)
+                    except Exception:
+                        settings[i] = None
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        plan = plan_start(data, settings)
+        lines = [f"Slot {p.slot + 1}: {p.text}" for p in plan.slots]
+        text = "\n".join(lines)
+
+        if not plan.starting:
+            QMessageBox.information(self, "Start Charger",
+                                    f"No slot would start.\n\n{text}")
             return
 
-        if self.mc3000.start_processing():
-            self.status_bar.showMessage("Start command sent")
+        box = QMessageBox(self)
+        box.setWindowTitle("Start Charger")
+        box.setIcon(QMessageBox.Question)
+        info = ("The charger has no per-slot start: every idle slot with a cell starts.\n"
+                "Assign a do-nothing program (e.g. LiIon Charge, target 2.50 V) to slots "
+                "that should stay idle.")
+        if plan.needs_reset and plan.any_running:
+            info += ("\n\nSome slots are finished and need a reset first, but other slots "
+                     "are still running. A reset (stop) would abort the running slots.")
+            box.setText(f"Start charging now?\n\n{text}")
+            box.setInformativeText(info)
+            restart_btn = box.addButton("Stop all && start", QMessageBox.DestructiveRole)
+            start_btn = box.addButton("Start without reset", QMessageBox.AcceptRole)
+            box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(start_btn)
+        else:
+            if plan.needs_reset:
+                info += "\n\nFinished slots are reset automatically before starting."
+            box.setText(f"Start charging now?\n\n{text}")
+            box.setInformativeText(info)
+            start_btn = box.addButton("Start", QMessageBox.AcceptRole)
+            restart_btn = None
+            box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(start_btn)
+        box.exec()
+        clicked = box.clickedButton()
+
+        if clicked is restart_btn and restart_btn is not None:
+            do_reset = True
+        elif clicked is start_btn:
+            do_reset = plan.needs_reset and not plan.any_running
+        else:
+            return
+
+        ok = True
+        if do_reset:
+            ok = self.mc3000.stop_processing()
+            time.sleep(0.5)
+        ok = ok and self.mc3000.start_processing()
+        if ok:
+            self.status_bar.showMessage(
+                "Reset + start command sent" if do_reset else "Start command sent")
         else:
             QMessageBox.warning(self, "Start Failed", "Failed to start charging.")
 
