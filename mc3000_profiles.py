@@ -276,21 +276,49 @@ BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
         "cut_time_min": 600,
     },
     # Capacity test
-    # Must be Cycle mode: Refresh always runs C>D>C and ignores cycle_mode.
-    "NiMH Capacity Test (D>C)": {
+    # Capacity tests must use Cycle mode: Refresh always runs C>D>C and
+    # ignores cycle_mode. One D>C cycle: discharge measures the capacity,
+    # the following charge leaves the cell full.
+    "NiMH AA 2000mAh Capacity Test (D>C)": {
         "battery_type": 3,
         "operation_mode": 4,  # Cycle
         "capacity_mah": 2000,
         "charge_current_ma": 1000,
-        "discharge_current_ma": 500,
+        "discharge_current_ma": 500,  # 0.25C - ~4 h
         "charge_end_voltage_mv": 1450,
         "discharge_cut_voltage_mv": 900,
         "charge_end_current_ma": 100,
         "num_cycles": 1,
         "cycle_mode": 2,  # D>C
         "charge_resting_min": 5,
+        "discharge_resting_min": 5,
+        "peak_sense_mv": 5,
+        "trickle_current_ma": 50,
+        "trickle_time": 0,  # OFF
         "cut_temperature_c": 45,
         "cut_time_min": 300,
+    },
+    # 21700 cells around 4000-5000 mAh (e.g. Molicel P42A/P45B).
+    # Capacity limit set above the rated capacity so it never ends a phase.
+    "Li-Ion 21700 Capacity Test (D>C, 1A)": {
+        "battery_type": 0,
+        "operation_mode": 4,  # Cycle
+        "capacity_mah": 5000,
+        "charge_current_ma": 2000,
+        "discharge_current_ma": 1000,  # ~4-4.5 h
+        "charge_end_voltage_mv": 4200,
+        "discharge_cut_voltage_mv": 2800,
+        "charge_end_current_ma": 100,
+        "discharge_reduce_current_ma": 500,
+        "num_cycles": 1,
+        "cycle_mode": 2,  # D>C
+        "charge_resting_min": 10,
+        "discharge_resting_min": 10,  # let the cell cool before charging
+        "trickle_current_ma": 1,
+        "trickle_time": 0,
+        "restart_voltage_mv": 2300,  # = OFF
+        "cut_temperature_c": 45,
+        "cut_time_min": 360,
     },
 }
 

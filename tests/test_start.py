@@ -62,5 +62,7 @@ def test_nimh_idle_is_not_blocked():
 
 def test_capacity_test_preset_uses_cycle_mode():
     from mc3000_profiles import BUILTIN_PRESETS
-    p = BUILTIN_PRESETS["NiMH Capacity Test (D>C)"]
+    p = BUILTIN_PRESETS["NiMH AA 2000mAh Capacity Test (D>C)"]
     assert p["operation_mode"] == 4 and p["cycle_mode"] == 2 and p["num_cycles"] == 1
+    q = BUILTIN_PRESETS["Li-Ion 21700 Capacity Test (D>C, 1A)"]
+    assert q["operation_mode"] == 4 and q["cycle_mode"] == 2 and q["battery_type"] == 0

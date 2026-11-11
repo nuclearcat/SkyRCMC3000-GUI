@@ -5,6 +5,13 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+## Changes in 1.8.12
+
+- Capacity test presets: "NiMH AA 2000mAh Capacity Test (D>C)" (all values
+  set explicitly) and new "Li-Ion 21700 Capacity Test (D>C, 1A)" for
+  4000-5000 mAh cells (discharge 1 A to 2.8 V, charge 2 A to 4.2 V / 0.1 A,
+  10 min rest, capacity limit 5000 mAh, cut-off time 360 min).
+
 ## Changes in 1.8.10
 
 - Preset "NiMH Capacity Test (D>C)" (renamed from "Capacity Test (D>C)") now uses Cycle mode (1 cycle, D>C). It used
