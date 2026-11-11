@@ -43,3 +43,10 @@ def test_standby_no_reset():
     plan = plan_start([d(0, 3600)] * 4, [s(4200)] * 4)
     assert not plan.needs_reset
     assert all(p.state == STARTS for p in plan.slots)
+
+
+def test_idle_presets_listed_first():
+    from mc3000_profiles import ordered_preset_names
+    names = ordered_preset_names()
+    assert names[0].startswith("Idle") and names[1].startswith("Idle")
+    assert not names[2].startswith("Idle")

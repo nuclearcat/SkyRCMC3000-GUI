@@ -292,6 +292,13 @@ BUILTIN_PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def ordered_preset_names() -> List[str]:
+    """Built-in preset names for the quick-profile list: idle programs first."""
+    idle = [n for n in BUILTIN_PRESETS if n.startswith("Idle")]
+    rest = sorted(n for n in BUILTIN_PRESETS if not n.startswith("Idle"))
+    return idle + rest
+
+
 class ProfileManager:
     """Manages saving and loading of charging profiles."""
 

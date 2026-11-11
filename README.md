@@ -5,6 +5,10 @@
 
 Cross-platform Python GUI for monitoring and controlling the SKYRC MC3000 battery charger.
 
+## Changes in 1.8.6
+
+- Idle profiles are listed first in the quick-profile list.
+
 ## Changes in 1.8.5
 
 - NiMH idle profile tested: the charger charges ~20 s at 100 mA, then

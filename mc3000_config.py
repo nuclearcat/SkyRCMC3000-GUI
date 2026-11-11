@@ -592,10 +592,10 @@ class SlotConfigWidget(QWidget):
         """Populate the profile combo box."""
         if not PROFILES_AVAILABLE:
             return
-        from mc3000_profiles import ProfileManager, BUILTIN_PRESETS
+        from mc3000_profiles import ProfileManager, ordered_preset_names
         pm = ProfileManager()
         # Add built-in profiles
-        for name in sorted(BUILTIN_PRESETS.keys()):
+        for name in ordered_preset_names():
             self.profile_combo.addItem(name, name)
         # Add user profiles
         user_profiles = pm.get_user_profiles()
@@ -722,7 +722,7 @@ class SlotConfigDialog(QDialog):
         """Refresh profile combo boxes in all slot widgets."""
         if not PROFILES_AVAILABLE:
             return
-        from mc3000_profiles import ProfileManager, BUILTIN_PRESETS
+        from mc3000_profiles import ProfileManager, ordered_preset_names
         pm = ProfileManager()
         user_profiles = pm.get_user_profiles()
 
@@ -732,7 +732,7 @@ class SlotConfigDialog(QDialog):
                 widget.profile_combo.clear()
                 widget.profile_combo.addItem("-- Select Profile --", None)
                 # Add built-in profiles
-                for name in sorted(BUILTIN_PRESETS.keys()):
+                for name in ordered_preset_names():
                     widget.profile_combo.addItem(name, name)
                 # Add user profiles
                 if user_profiles:
